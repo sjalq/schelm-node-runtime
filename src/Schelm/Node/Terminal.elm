@@ -276,58 +276,70 @@ applyCommand router command_ state =
         Recover _ callback ->
             Elm.Kernel.SchelmRuntime.recover |> Task.andThen (\outcome -> send router callback (control outcome) state)
 
-        OpenInput (Terminal id _) callback ->
-            case state.reader of
-                Just _ ->
-                    send router callback (Err ReaderBusy) state
+        OpenInput ((Terminal id _) as terminal) callback ->
+            if state.terminal /= Just terminal then
+                send router callback (Err ReaderReleased) state
 
-                Nothing ->
-                    let
-                        reader =
-                            InputReader id
-                    in
-                    send router callback (Ok reader) { state | reader = Just reader }
+            else
+                case state.reader of
+                    Just _ ->
+                        send router callback (Err ReaderBusy) state
 
-        CloseInput _ ->
-            case state.reading of
-                Nothing ->
-                    Task.succeed { state | reader = Nothing }
+                    Nothing ->
+                        let
+                            reader =
+                                InputReader id
+                        in
+                        send router callback (Ok reader) { state | reader = Just reader }
 
-                Just ( _, pid ) ->
-                    Process.kill pid |> Task.map (\_ -> { state | reader = Nothing, reading = Nothing, nextRead = state.nextRead + 1 })
+        CloseInput reader ->
+            if state.reader /= Just reader then
+                Task.succeed state
 
-        Read (InputReader id) callback ->
-            case state.reading of
-                Just _ ->
-                    send router callback (Err InputReadInProgress) state
+            else
+                case state.reading of
+                    Nothing ->
+                        Task.succeed { state | reader = Nothing }
 
-                Nothing ->
-                    let
-                        readId =
-                            state.nextRead
-                    in
-                    Elm.Kernel.SchelmRuntime.read id
-                        |> Task.andThen
-                            (\raw ->
-                                let
-                                    result =
-                                        case raw.kind of
-                                            "piece" ->
-                                                Ok (InputPiece raw.text raw.bytes raw.malformed)
+                    Just ( _, pid ) ->
+                        Process.kill pid |> Task.map (\_ -> { state | reader = Nothing, reading = Nothing, nextRead = state.nextRead + 1 })
 
-                                            "end" ->
-                                                Err (InputEnded raw.malformed)
+        Read ((InputReader id) as reader) callback ->
+            if state.reader /= Just reader then
+                send router callback (Err ReaderClosed) state
 
-                                            "closed" ->
-                                                Err ReaderClosed
+            else
+                case state.reading of
+                    Just _ ->
+                        send router callback (Err InputReadInProgress) state
 
-                                            _ ->
-                                                Err InputFailed
-                                in
-                                Platform.sendToSelf router (ReadDone readId callback result)
-                            )
-                        |> Process.spawn
-                        |> Task.map (\pid -> { state | reading = Just ( readId, pid ) })
+                    Nothing ->
+                        let
+                            readId =
+                                state.nextRead
+                        in
+                        Elm.Kernel.SchelmRuntime.read id
+                            |> Task.andThen
+                                (\raw ->
+                                    let
+                                        result =
+                                            case raw.kind of
+                                                "piece" ->
+                                                    Ok (InputPiece raw.text raw.bytes raw.malformed)
+
+                                                "end" ->
+                                                    Err (InputEnded raw.malformed)
+
+                                                "closed" ->
+                                                    Err ReaderClosed
+
+                                                _ ->
+                                                    Err InputFailed
+                                    in
+                                    Platform.sendToSelf router (ReadDone readId callback result)
+                                )
+                            |> Process.spawn
+                            |> Task.map (\pid -> { state | reading = Just ( readId, pid ) })
 
 
 send router callback result state =

@@ -86,7 +86,7 @@ type alias Pending msg =
 
 
 type alias Endpoint msg =
-    { front : List (Pending msg), back : List (Pending msg), count : Int, bytes : Int, inFlight : Maybe (Pending msg), terminal : Maybe WriteError, generation : Int }
+    { front : List (Pending msg), back : List (Pending msg), count : Int, bytes : Int, inFlight : Maybe (Pending msg), terminal : Maybe WriteError, generation : Int, listener : Maybe Process.Id }
 
 
 type alias State msg =
@@ -95,6 +95,7 @@ type alias State msg =
 
 type SelfMsg
     = WriteDone Int Int Int String
+    | EndpointFailed Int Int String
 
 
 type alias Router msg =
@@ -102,7 +103,7 @@ type alias Router msg =
 
 
 empty =
-    { front = [], back = [], count = 0, bytes = 0, inFlight = Nothing, terminal = Nothing, generation = 0 }
+    { front = [], back = [], count = 0, bytes = 0, inFlight = Nothing, terminal = Nothing, generation = 0, listener = Nothing }
 
 
 init =
@@ -152,7 +153,22 @@ applyCommand router (Write (Console key) value callback) state =
                     next =
                         put key queued { state | nextId = state.nextId + 1 }
                 in
-                start router key next
+                ensureListener router key next |> Task.andThen (start router key)
+
+
+ensureListener router key state =
+    let
+        endpoint =
+            Dict.get key state.endpoints |> Maybe.withDefault empty
+    in
+    case endpoint.listener of
+        Just _ ->
+            Task.succeed state
+
+        Nothing ->
+            Elm.Kernel.SchelmRuntime.attachConsole key (\outcome -> Platform.sendToSelf router (EndpointFailed key endpoint.generation outcome))
+                |> Process.spawn
+                |> Task.map (\pid -> put key { endpoint | listener = Just pid } state)
 
 
 start router key state =
@@ -190,7 +206,16 @@ start router key state =
                         |> Task.map (\_ -> put key running state)
 
 
-onSelfMsg router (WriteDone key generation id outcome) state =
+onSelfMsg router self state =
+    case self of
+        WriteDone key generation id outcome ->
+            settleOne router key generation id outcome state
+
+        EndpointFailed key generation outcome ->
+            settleEndpoint router key generation outcome state
+
+
+settleOne router key generation id outcome state =
     let
         endpoint =
             Dict.get key state.endpoints |> Maybe.withDefault empty
@@ -243,6 +268,36 @@ onSelfMsg router (WriteDone key generation id outcome) state =
 
         Nothing ->
             Task.succeed state
+
+
+settleEndpoint router key generation outcome state =
+    let
+        endpoint =
+            Dict.get key state.endpoints |> Maybe.withDefault empty
+
+        problem =
+            if outcome == "pipe" then
+                BrokenPipe
+
+            else
+                Closed
+
+        accepted =
+            case endpoint.inFlight of
+                Nothing ->
+                    endpoint.front ++ List.reverse endpoint.back
+
+                Just pending ->
+                    pending :: endpoint.front ++ List.reverse endpoint.back
+
+        closed =
+            { endpoint | front = [], back = [], count = 0, bytes = 0, inFlight = Nothing, terminal = Just problem, generation = generation + 1 }
+    in
+    if endpoint.generation /= generation || endpoint.terminal /= Nothing then
+        Task.succeed state
+
+    else
+        sendPending router accepted (Err problem) (put key closed state)
 
 
 settleQueued router key problem state =
