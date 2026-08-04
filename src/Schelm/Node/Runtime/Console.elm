@@ -176,9 +176,16 @@ start router key state =
 
                         running =
                             { remaining | inFlight = Just pending }
+
+                        operation =
+                            if textBytes pending.text == 0 then
+                                Platform.sendToSelf router (WriteDone key generation pending.id "ok")
+
+                            else
+                                Elm.Kernel.SchelmRuntime.write key (textString pending.text)
+                                    |> Task.andThen (\outcome -> Platform.sendToSelf router (WriteDone key generation pending.id outcome))
                     in
-                    Elm.Kernel.SchelmRuntime.write key (textString pending.text)
-                        |> Task.andThen (\outcome -> Platform.sendToSelf router (WriteDone key generation pending.id outcome))
+                    operation
                         |> Process.spawn
                         |> Task.map (\_ -> put key running state)
 
@@ -210,7 +217,18 @@ onSelfMsg router (WriteDone key generation id outcome) state =
                                 endpoint.terminal
 
                     cleared =
-                        { endpoint | inFlight = Nothing, count = endpoint.count - 1, bytes = endpoint.bytes - textBytes pending.text, terminal = terminal }
+                        { endpoint
+                            | inFlight = Nothing
+                            , count = endpoint.count - 1
+                            , bytes = endpoint.bytes - textBytes pending.text
+                            , terminal = terminal
+                            , generation =
+                                if terminal == Nothing then
+                                    endpoint.generation
+
+                                else
+                                    endpoint.generation + 1
+                        }
 
                     next =
                         put key cleared state
