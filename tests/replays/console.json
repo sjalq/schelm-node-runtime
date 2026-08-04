@@ -1,0 +1,22 @@
+{
+  "subsystem": "console",
+  "trace": [
+    {
+      "op": "write",
+      "id": 1,
+      "bytes": 0
+    },
+    {
+      "op": "write",
+      "id": 2,
+      "bytes": 65536
+    },
+    {
+      "op": "settle",
+      "id": 1,
+      "bytes": 0,
+      "kind": "ok"
+    }
+  ],
+  "digest": "bc6299c3a305129c0f3db393d0cc6d65b17cb382f62b3d10621b88ea89b8d098"
+}

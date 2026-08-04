@@ -1,0 +1,7 @@
+{
+  "subsystem": "ticker",
+  "target": 110,
+  "interval": 10,
+  "actual": 157,
+  "digest": "47e78eb1fb49c1303063e87c101fd2b38c5e680d2150781d51eaffa470d64ad8"
+}

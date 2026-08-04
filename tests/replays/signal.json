@@ -1,0 +1,22 @@
+{
+  "subsystem": "signal",
+  "trace": [
+    {
+      "op": "subs",
+      "count": 200
+    },
+    {
+      "op": "fire",
+      "generation": 1
+    },
+    {
+      "op": "subs",
+      "count": 0
+    },
+    {
+      "op": "fire",
+      "generation": 1
+    }
+  ],
+  "digest": "a08c2219d0dc62a29cbf56792f96ed545cdceab83943979ac06ae1cb65b0f585"
+}

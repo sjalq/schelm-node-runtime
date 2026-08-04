@@ -5,7 +5,8 @@
     "format":"elm-format --yes src fixture-apps tests/elm",
     "format:check":"elm-format --validate src fixture-apps tests/elm",
     "build":"node scripts/build-fixtures.cjs",
-    "test:node":"node --test --test-timeout=60000 tests/node/*.test.cjs",
-    "test":"npm run format:check && npm run build && npm run test:node && node tests/audit.cjs"
+    "test:node":"node --test --test-timeout=60000 tests/node/*.test.cjs tests/pty/*.test.cjs",
+    "test:evidence":"node tests/oracle/import-gate.cjs && node tests/mutation-gate.cjs && node tests/replay.cjs tests/replays/console.json && node tests/replay.cjs tests/replays/signal.json && node tests/replay.cjs tests/replays/input.json && node tests/replay.cjs tests/replays/ticker.json",
+    "test":"npm run format:check && npm run build && npm run test:node && npm run test:evidence && node tests/audit.cjs"
   }
 }
