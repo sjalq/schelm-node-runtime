@@ -34,20 +34,21 @@ type alias Model =
     , terminal : Maybe Terminal.Terminal
     , reader : Maybe Terminal.InputReader
     , ticker : Maybe Ticker.Ticker
+    , mode : String
     }
 
 
-main : Program () Model Msg
+main : Program String Model Msg
 main =
     Platform.worker
-        { init = \_ -> ( empty, Task.attempt Ready (Runtime.initialize Runtime.emptySelection) )
+        { init = \mode -> ( { empty | mode = mode }, Task.attempt Ready (Runtime.initialize Runtime.emptySelection) )
         , update = update
         , subscriptions = subscriptions
         }
 
 
 empty =
-    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing }
+    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing, mode = "ordinary" }
 
 
 subscriptions model =
@@ -108,13 +109,18 @@ update msg model =
             in
             ( { model | runtime = Just runtime }
             , Cmd.batch
-                [ Console.write (Console.stdout runtime) output Wrote |> Cmd.map identity
-                , Console.write (Console.stderr runtime) output Wrote
-                , Terminal.acquire runtime TerminalReady
-                , Terminal.recover runtime Recovered
-                , Ticker.start runtime duration TickerReady
-                , Entropy.hex runtime count |> Task.attempt EntropyDone
-                ]
+                (if String.startsWith "pty-" model.mode then
+                    [ Terminal.acquire runtime TerminalReady ]
+
+                 else
+                    [ Console.write (Console.stdout runtime) output Wrote |> Cmd.map identity
+                    , Console.write (Console.stderr runtime) output Wrote
+                    , Terminal.acquire runtime TerminalReady
+                    , Terminal.recover runtime Recovered
+                    , Ticker.start runtime duration TickerReady
+                    , Entropy.hex runtime count |> Task.attempt EntropyDone
+                    ]
+                )
             )
 
         Ready (Err _) ->
@@ -146,11 +152,29 @@ update msg model =
         Wrote _ ->
             ( model, Cmd.none )
 
-        Controlled _ ->
-            ( model, Cmd.none )
+        Controlled (Ok _) ->
+            case model.terminal of
+                Just terminal ->
+                    if model.mode == "pty-release" || model.mode == "pty-restore-failed" then
+                        ( model, Cmd.batch [ report "RAW", Terminal.release terminal Controlled ] )
 
-        Recovered _ ->
-            ( model, Cmd.none )
+                    else
+                        ( model, report "RAW" )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        Controlled (Err Terminal.RestoreFailedControl) ->
+            ( model, Cmd.batch [ report "POISON", Maybe.withDefault Cmd.none (Maybe.map (\runtime -> Terminal.recover runtime Recovered) model.runtime) ] )
+
+        Controlled (Err _) ->
+            ( model, report "control-error" )
+
+        Recovered (Ok _) ->
+            ( model, report "RECOVERED" )
+
+        Recovered (Err _) ->
+            ( model, report "recover-error" )
 
         TerminalReady (Err _) ->
             ( model, Cmd.none )

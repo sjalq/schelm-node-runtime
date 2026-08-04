@@ -1,1 +1,23 @@
-'use strict';const mode=process.argv[2];if(!process.stdin.isTTY)process.exit(90);process.stdin.setRawMode(true);process.stdout.write('RAW\n');if(mode==='release'){process.stdin.setRawMode(false);process.stdout.write('COOKED\n');process.exit(0);}if(mode==='backstop'){process.on('exit',()=>{try{process.stdin.setRawMode(false)}catch{}});process.exit(0);}if(mode==='restore-failed'){let poison=false;const real=process.stdin.setRawMode.bind(process.stdin);process.stdin.setRawMode=(v)=>{if(v===false&&!poison){poison=true;throw new Error('injected');}return real(v)};try{process.stdin.setRawMode(false)}catch{process.stdout.write('POISON\n')}try{process.stdin.setRawMode(false);process.stdout.write('RECOVERED\n');process.exit(0)}catch{process.exit(91)}}process.exit(92);
+'use strict';
+const mode = process.argv[2];
+const artifact = process.argv[3] || 'debug';
+if (!process.stdin.isTTY) process.exit(90);
+if (mode === 'restore-failed') {
+  let failed = false;
+  const real = process.stdin.setRawMode.bind(process.stdin);
+  process.stdin.setRawMode = value => {
+    if (value === false && !failed) {
+      failed = true;
+      throw new Error('injected restore failure');
+    }
+    return real(value);
+  };
+}
+const app = require(`../../build/runtime-${artifact}.js`).Elm.Main.init({ flags: `pty-${mode}` });
+app.ports.report.subscribe(line => {
+  if (line === 'RAW' || line === 'POISON' || line === 'RECOVERED') process.stdout.write(`${line}\n`);
+  if (mode === 'release' && line === 'RAW') setTimeout(() => process.exit(0), 50);
+  if (mode === 'backstop' && line === 'RAW') process.exit(0);
+  if (mode === 'restore-failed' && line === 'RECOVERED') process.exit(0);
+});
+setTimeout(() => process.exit(92), 3000);
