@@ -1,6 +1,7 @@
 # Runtime v1 five-principle self-audit
 
-Status: PM self-audit, not the required independent package audit or harness approval.
+Status: historical PM self-audit. The subsequent independent audit is recorded in
+`independent-runtime-audit.md`.
 
 ## 1. User mental model
 
@@ -32,16 +33,16 @@ not cross the boundary.
 
 ## 5. Guarantees have executable evidence
 
-Partial pass pending independent audit. Current evidence includes debug/opt
+Pass. Current evidence includes debug/opt
 compilation, deterministic replay digests, independent JS oracle/import gate,
 mutation kills, PTY cooked restoration/poison recovery/backstop, 200-scale
-fixtures, artifact checks, and provenance. The package self-audit fails closed
-if any evidence is absent. This PM audit does not substitute for an independent
-review, and harness integration remains blocked.
+fixtures, artifact checks, and provenance. The package audit fails closed if
+any evidence is absent. This PM audit did not substitute for independent review;
+the completed adversarial review is preserved separately.
 
 ## Conclusion
 
 The public API is coherent and substantially smaller/more truthful than design
 01. No ergonomic concern justifies weakening bounds, adding ambient exit, or
-moving policy into JavaScript. Independent package audit is still required
-before any harness work.
+moving policy into JavaScript. The independent audit subsequently passed after
+the deterministic provenance repair.

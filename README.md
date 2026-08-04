@@ -9,10 +9,13 @@ Process exit and daemon session close are deliberately not package APIs. See
 `docs/design/05-design-revision-b.md` for the final contract and
 `06-property-test-plan.md` for evidence requirements.
 
+The canonical package gate is:
+
 ```sh
-node scripts/build-fixtures.cjs
-node --test --test-timeout=60000 tests/node/*.test.cjs
-node tests/audit.cjs
+npm test
 ```
 
-Harness integration is blocked until package audit evidence is committed.
+Release 1.0.1 has independent adversarial audit evidence in
+`docs/audit/independent-runtime-audit.md`. Immutable release provenance is
+recorded in `build/provenance.json`; consumers must pin the release commit,
+tree, bundle/archive hashes, and exact version rather than a mutable branch.

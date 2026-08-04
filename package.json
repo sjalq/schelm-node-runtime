@@ -1,5 +1,5 @@
 {
-  "name":"schelm-node-runtime","version":"1.0.0","private":true,"type":"commonjs",
+  "name":"schelm-node-runtime","version":"1.0.1","private":true,"type":"commonjs",
   "engines":{"node":"24.4.1"},
   "scripts":{
     "format":"/home/s.dormehl/git/agent-harness/node_modules/elm-format/bin/elm-format --yes src fixture-apps/production/src api-feasibility/package/src api-feasibility/app/src",
