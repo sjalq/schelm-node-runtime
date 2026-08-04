@@ -141,9 +141,6 @@ applyCommand router (Write (Console key) value callback) state =
             else if endpoint.bytes + width > 1048576 then
                 send router callback (Err BackpressureLimit) state
 
-            else if width == 0 then
-                send router callback (Ok ()) state
-
             else
                 let
                     pending =
