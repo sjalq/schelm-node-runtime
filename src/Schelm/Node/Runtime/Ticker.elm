@@ -106,7 +106,15 @@ init =
 
 
 onEffects router commands subscriptions state =
-    cancelTimer state |> Task.andThen (applyCommands router commands) |> Task.map (withTaggers subscriptions) |> Task.andThen (arm router)
+    let
+        ( starts, others ) =
+            splitStarts commands
+    in
+    cancelTimer state
+        |> Task.andThen (applyCommands router others)
+        |> Task.andThen (applyStarts router starts)
+        |> Task.map (withTaggers subscriptions)
+        |> Task.andThen (arm router)
 
 
 cancelTimer state =
@@ -116,6 +124,91 @@ cancelTimer state =
 
         Just pid ->
             Process.kill pid |> Task.map (\_ -> { state | timer = Nothing, generation = state.generation + 1 })
+
+
+splitStarts commands =
+    let
+        step command_ ( starts, others ) =
+            case command_ of
+                Start runtime duration callback ->
+                    ( ( runtime, duration, callback ) :: starts, others )
+
+                _ ->
+                    ( starts, command_ :: others )
+
+        ( starts, others ) =
+            List.foldl step ( [], [] ) commands
+    in
+    ( List.reverse starts, List.reverse others )
+
+
+applyStarts router starts state =
+    case starts of
+        [] ->
+            Task.succeed state
+
+        ( runtime, duration, callback ) :: rest ->
+            let
+                same =
+                    List.filter (\( _, candidate, _ ) -> Clock.timerMilliseconds candidate == Clock.timerMilliseconds duration) rest
+
+                different =
+                    List.filter (\( _, candidate, _ ) -> Clock.timerMilliseconds candidate /= Clock.timerMilliseconds duration) rest
+
+                accepted =
+                    List.take 63 same
+
+                rejected =
+                    List.drop 63 same
+            in
+            applyStart router runtime duration (callback :: List.map (\( _, _, cb ) -> cb) accepted) state
+                |> Task.andThen (sendStartErrors router (List.map (\( _, _, cb ) -> cb) rejected) TooManyStartJoiners)
+                |> Task.andThen (applyStarts router different)
+
+
+applyStart router runtime duration callbacks state =
+    if Dict.size state.active >= 64 then
+        sendStartErrors router callbacks TooManyTickers state
+
+    else
+        Clock.monotonicNow runtime
+            |> Task.andThen
+                (\(MonotonicTime now) ->
+                    let
+                        id =
+                            state.next
+
+                        interval =
+                            Clock.timerMilliseconds duration
+
+                        active =
+                            { interval = interval, target = now + toFloat interval, previous = now, taggers = [] }
+
+                        next =
+                            { state | next = id + 1, active = Dict.insert id active state.active }
+                    in
+                    sendStartSuccess router callbacks (Ticker id) next
+                )
+
+
+sendStartSuccess router callbacks ticker state =
+    case callbacks of
+        [] ->
+            Task.succeed state
+
+        callback :: rest ->
+            Platform.sendToApp router (callback (Ok ticker))
+                |> Task.andThen (\_ -> sendStartSuccess router rest ticker state)
+
+
+sendStartErrors router callbacks problem state =
+    case callbacks of
+        [] ->
+            Task.succeed state
+
+        callback :: rest ->
+            Platform.sendToApp router (callback (Err problem))
+                |> Task.andThen (\_ -> sendStartErrors router rest problem state)
 
 
 applyCommands router commands state =
