@@ -73,7 +73,7 @@ type ControlError
 
 
 type InputReader
-    = InputReader Int
+    = InputReader Int Int
 
 
 type ReaderError
@@ -192,15 +192,19 @@ subMap f (Resize terminal tagger) =
 type alias State msg =
     { terminal : Maybe Terminal
     , reader : Maybe InputReader
-    , reading : Maybe ( Int, Process.Id )
+    , reading : Maybe ( InputReader, Int, Process.Id )
+    , nextReader : Int
     , nextRead : Int
     , resizeTaggers : List (ResizeEvent -> msg)
-    , resizeListener : Maybe Process.Id
+    , resizeRejected : Int
+    , resizeListener : Maybe ( Int, Process.Id )
+    , nextResize : Int
     }
 
 
 type SelfMsg msg
-    = ReadDone Int (Result InputError InputPiece -> msg) (Result InputError InputPiece)
+    = ReadDone InputReader Int (Result InputError InputPiece -> msg) (Result InputError InputPiece)
+    | ResizeDone Int Size
 
 
 type alias Router msg =
@@ -208,7 +212,7 @@ type alias Router msg =
 
 
 init =
-    Task.succeed { terminal = Nothing, reader = Nothing, reading = Nothing, nextRead = 0, resizeTaggers = [], resizeListener = Nothing }
+    Task.succeed { terminal = Nothing, reader = Nothing, reading = Nothing, nextReader = 0, nextRead = 0, resizeTaggers = [], resizeRejected = 0, resizeListener = Nothing, nextResize = 0 }
 
 
 onEffects router commands subscriptions state =
@@ -507,9 +511,9 @@ applyCommand router command_ state =
                     Nothing ->
                         let
                             reader =
-                                InputReader id
+                                InputReader id state.nextReader
                         in
-                        send router callback (Ok reader) { state | reader = Just reader }
+                        send router callback (Ok reader) { state | reader = Just reader, nextReader = state.nextReader + 1 }
 
         CloseInput reader ->
             if state.reader /= Just reader then
@@ -520,12 +524,16 @@ applyCommand router command_ state =
                     Nothing ->
                         Task.succeed { state | reader = Nothing }
 
-                    Just ( _, pid ) ->
-                        Process.kill pid |> Task.map (\_ -> { state | reader = Nothing, reading = Nothing, nextRead = state.nextRead + 1 })
+                    Just ( activeReader, _, pid ) ->
+                        if activeReader /= reader then
+                            Task.succeed { state | reader = Nothing }
 
-        Read ((InputReader id) as reader) callback ->
+                        else
+                            Process.kill pid |> Task.map (\_ -> { state | reader = Nothing, reading = Nothing, nextRead = state.nextRead + 1 })
+
+        Read ((InputReader id _) as reader) callback ->
             if state.reader /= Just reader then
-                send router callback (Err ReaderClosed) state
+                Task.succeed state
 
             else
                 case state.reading of
@@ -555,10 +563,10 @@ applyCommand router command_ state =
                                                 _ ->
                                                     Err InputFailed
                                     in
-                                    Platform.sendToSelf router (ReadDone readId callback result)
+                                    Platform.sendToSelf router (ReadDone reader readId callback result)
                                 )
                             |> Process.spawn
-                            |> Task.map (\pid -> { state | reading = Just ( readId, pid ) })
+                            |> Task.map (\pid -> { state | reading = Just ( reader, readId, pid ) })
 
 
 send router callback result state =
@@ -582,38 +590,96 @@ control outcome =
 
 syncResize router subscriptions state =
     let
-        taggers =
-            List.take 200 (List.map (\(Resize _ tagger) -> tagger) subscriptions)
+        currentTaggers =
+            case state.terminal of
+                Just current ->
+                    List.foldr
+                        (\(Resize terminal tagger) acc ->
+                            if terminal == current then
+                                tagger :: acc
+
+                            else
+                                acc
+                        )
+                        []
+                        subscriptions
+
+                Nothing ->
+                    []
+
+        accepted =
+            List.take 200 currentTaggers
+
+        rejected =
+            List.drop 200 currentTaggers
+
+        rejectedCount =
+            List.length rejected
+
+        newlyRejected =
+            List.drop state.resizeRejected rejected
+
+        notifyLimit next =
+            List.foldl
+                (\tagger task -> task |> Task.andThen (\_ -> Platform.sendToApp router (tagger ResizeSubscriberLimit)))
+                (Task.succeed ())
+                newlyRejected
+                |> Task.map (\_ -> { next | resizeRejected = rejectedCount })
     in
-    case ( taggers, state.resizeListener ) of
-        ( [], Just pid ) ->
-            Process.kill pid |> Task.map (\_ -> { state | resizeTaggers = [], resizeListener = Nothing })
+    case ( accepted, state.resizeListener, state.terminal ) of
+        ( [], Just ( _, pid ), _ ) ->
+            Process.kill pid
+                |> Task.andThen (\_ -> notifyLimit { state | resizeTaggers = [], resizeListener = Nothing, nextResize = state.nextResize + 1 })
 
-        ( [], Nothing ) ->
-            Task.succeed { state | resizeTaggers = [] }
+        ( [], Nothing, _ ) ->
+            notifyLimit { state | resizeTaggers = [] }
 
-        ( _ :: _, Just _ ) ->
-            Task.succeed { state | resizeTaggers = taggers }
+        ( _ :: _, Just _, Just _ ) ->
+            notifyLimit { state | resizeTaggers = accepted }
 
-        ( _ :: _, Nothing ) ->
-            Elm.Kernel.SchelmRuntime.attachResize
-                (\size -> List.foldr (\tagger task -> Platform.sendToApp router (tagger (Resized size)) |> Task.andThen (\_ -> task)) (Task.succeed ()) taggers)
+        ( _ :: _, Nothing, Just terminal ) ->
+            let
+                generation =
+                    state.nextResize
+            in
+            Elm.Kernel.SchelmRuntime.attachResize (terminalId terminal) (\size -> Platform.sendToSelf router (ResizeDone generation size))
                 |> Process.spawn
-                |> Task.map (\pid -> { state | resizeTaggers = taggers, resizeListener = Just pid })
+                |> Task.andThen (\pid -> notifyLimit { state | resizeTaggers = accepted, resizeListener = Just ( generation, pid ) })
 
-
-onSelfMsg router (ReadDone readId callback result) state =
-    case state.reading of
-        Just ( current, _ ) ->
-            if current == readId then
-                Platform.sendToApp router (callback result)
-                    |> Task.map (\_ -> { state | reading = Nothing, nextRead = state.nextRead + 1 })
-
-            else
-                Task.succeed state
-
-        Nothing ->
+        ( _ :: _, _, Nothing ) ->
             Task.succeed state
+
+
+onSelfMsg router selfMsg state =
+    case selfMsg of
+        ReadDone reader readId callback result ->
+            case state.reading of
+                Just ( currentReader, currentRead, _ ) ->
+                    if currentReader == reader && currentRead == readId && state.reader == Just reader then
+                        Platform.sendToApp router (callback result)
+                            |> Task.map (\_ -> { state | reading = Nothing, nextRead = state.nextRead + 1 })
+
+                    else
+                        Task.succeed state
+
+                Nothing ->
+                    Task.succeed state
+
+        ResizeDone generation size ->
+            case state.resizeListener of
+                Just ( current, _ ) ->
+                    if current == generation then
+                        List.foldl
+                            (\tagger task -> task |> Task.andThen (\_ -> Platform.sendToApp router (tagger (Resized size))))
+                            (Task.succeed ())
+                            state.resizeTaggers
+                            |> Task.map (\_ -> state)
+
+                    else
+                        Task.succeed state
+
+                Nothing ->
+                    Task.succeed state
 
 
 cancelRead state =
@@ -621,7 +687,7 @@ cancelRead state =
         Nothing ->
             Task.succeed state
 
-        Just ( _, pid ) ->
+        Just ( _, _, pid ) ->
             Process.kill pid
                 |> Task.map (\_ -> { state | reading = Nothing, nextRead = state.nextRead + 1 })
 

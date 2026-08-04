@@ -18,6 +18,7 @@ type Msg
     = Ready (Result Runtime.InitError Runtime.Runtime)
     | Wrote (Result Console.WriteError ())
     | SuiteWrote Int (Result Console.WriteError ())
+    | ReplayWrote Int (Result Console.WriteError ())
     | TerminalReady (Result Terminal.AcquireError Terminal.Terminal)
     | Controlled (Result Terminal.ControlError ())
     | Recovered (Result Terminal.ControlError ())
@@ -44,6 +45,7 @@ type alias Model =
     , ticker : Maybe Ticker.Ticker
     , mode : String
     , shareCount : Int
+    , previousReader : Maybe Terminal.InputReader
     }
 
 
@@ -57,7 +59,7 @@ main =
 
 
 empty =
-    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing, mode = "ordinary", shareCount = 0 }
+    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing, mode = "ordinary", shareCount = 0, previousReader = Nothing }
 
 
 subscriptions model =
@@ -67,6 +69,9 @@ subscriptions model =
                 if model.mode == "fanout-signal" then
                     Sub.batch (List.repeat 200 (Signal.onSignal runtime Signal.Interrupt SignalEvent))
 
+                else if model.mode == "limit-signal" then
+                    Sub.batch (List.repeat 201 (Signal.onSignal runtime Signal.Interrupt SignalEvent))
+
                 else
                     Signal.onSignal runtime Signal.Interrupt SignalEvent |> Sub.map identity
 
@@ -74,8 +79,14 @@ subscriptions model =
                 Sub.none
         , case model.terminal of
             Just terminal ->
-                if model.mode == "pty-fanout-resize" then
+                if model.mode == "pty-input-replay" then
+                    Sub.none
+
+                else if model.mode == "pty-fanout-resize" then
                     Sub.batch (List.repeat 200 (Terminal.onResize terminal ResizeEvent))
+
+                else if model.mode == "pty-limit-resize" then
+                    Sub.batch (List.repeat 201 (Terminal.onResize terminal ResizeEvent))
 
                 else
                     Terminal.onResize terminal ResizeEvent |> Sub.map identity
@@ -133,10 +144,16 @@ update msg model =
                 (if model.mode == "console-suite" then
                     List.map (\id -> Console.write (Console.stdout runtime) output (SuiteWrote id)) (List.range 0 2)
 
+                 else if model.mode == "replay-console" then
+                    List.map (\id -> Console.write (Console.stdout runtime) output (ReplayWrote id)) (List.range 0 256)
+
                  else if model.mode == "pty-share" then
                     List.repeat 65 (Terminal.acquire runtime ShareAcquired)
 
                  else if model.mode == "pty-input-replay" then
+                    [ Terminal.acquire runtime TerminalReady ]
+
+                 else if model.mode == "pty-input-aba" then
                     [ Terminal.acquire runtime TerminalReady ]
 
                  else if model.mode == "share-ticker" then
@@ -164,7 +181,7 @@ update msg model =
 
         TerminalReady (Ok terminal) ->
             ( { model | terminal = Just terminal }
-            , if model.mode == "pty-input-replay" then
+            , if model.mode == "pty-input-replay" || model.mode == "pty-input-aba" then
                 Terminal.openInput terminal ReplayReaderReady
 
               else
@@ -183,17 +200,42 @@ update msg model =
         TickEvent tick ->
             ( model, report (String.fromInt (Ticker.skippedIntervals tick)) )
 
-        SignalEvent _ ->
-            ( model, report "signal" )
+        SignalEvent event ->
+            if model.mode == "pty-input-aba" && model.previousReader /= Nothing && model.reader == Nothing then
+                ( model, Terminal.openInput (Maybe.withDefault (crash ()) model.terminal) ReplayReaderReady )
 
-        ResizeEvent _ ->
-            ( model, report "resize" )
+            else
+                ( model
+                , report
+                    (case event of
+                        Signal.Received _ ->
+                            "signal"
+
+                        Signal.SubscriberLimit _ ->
+                            "signal-limit"
+                    )
+                )
+
+        ResizeEvent event ->
+            ( model
+            , report
+                (case event of
+                    Terminal.Resized _ ->
+                        "resize"
+
+                    Terminal.ResizeSubscriberLimit ->
+                        "resize-limit"
+                )
+            )
 
         Wrote _ ->
             ( model, Cmd.none )
 
         SuiteWrote id result ->
             ( model, report ("console:" ++ String.fromInt id ++ ":" ++ consoleResult result) )
+
+        ReplayWrote id result ->
+            ( model, report ("replay-console:" ++ String.fromInt id ++ ":" ++ consoleResult result) )
 
         Controlled (Ok _) ->
             case model.terminal of
@@ -297,10 +339,34 @@ update msg model =
             ( model, report (shareControlResult "recover" result) )
 
         ReplayReaderReady (Ok reader) ->
-            ( { model | reader = Just reader }, Terminal.read reader (ReplayReadDone 1) )
+            if model.mode == "pty-input-aba" then
+                case model.previousReader of
+                    Nothing ->
+                        ( { model | reader = Nothing, previousReader = Just reader }
+                        , Cmd.batch
+                            [ Terminal.closeInput reader
+                            , Terminal.openInput (Maybe.withDefault (crash ()) model.terminal) ReplayReaderReady
+                            ]
+                        )
+
+                    Just stale ->
+                        ( { model | reader = Just reader }
+                        , Cmd.batch
+                            [ report "aba-ready"
+                            , Terminal.read reader (ReplayReadDone 1)
+                            , Terminal.read stale (ReplayReadDone 0)
+                            , Terminal.closeInput stale
+                            ]
+                        )
+
+            else
+                ( { model | reader = Just reader }, Terminal.read reader (ReplayReadDone 1) )
 
         ReplayReaderReady (Err _) ->
             ( model, report "input-reader-error" )
+
+        ReplayReadDone 0 _ ->
+            ( model, report "stale-read-delivered" )
 
         ReplayReadDone readNumber (Ok piece) ->
             case ( readNumber, model.reader ) of
@@ -342,6 +408,12 @@ consoleResult result =
 
         Err Console.Closed ->
             "closed"
+
+        Err Console.TooManyWrites ->
+            "too-many"
+
+        Err Console.BackpressureLimit ->
+            "backpressure"
 
         Err _ ->
             "other"

@@ -1,1 +1,31 @@
-'use strict';const assert=require('node:assert/strict');const o=require('./oracle/oracle.cjs');const killed=[];function kill(name,a,b){assert.notDeepEqual(a,b,name);killed.push(name);}const writes=Array.from({length:257},(_,id)=>({op:'write',id,bytes:0}));kill('count-off-by-one',o.consoleOracle(writes),o.consoleOracle(writes,'count-off-by-one'));kill('zero-free',o.consoleOracle(writes),o.consoleOracle(writes,'zero-free'));const bytes=[{op:'write',id:1,bytes:1048576},{op:'write',id:2,bytes:1}];kill('bytes-off-by-one',o.consoleOracle(bytes),o.consoleOracle(bytes,'bytes-off-by-one'));const sig=[{op:'subs',count:1},{op:'subs',count:0},{op:'subs',count:1},{op:'fire',generation:1}];kill('generation-stuck',o.signalOracle(sig),o.signalOracle(sig,'generation-stuck'));kill('stale-signal',o.signalOracle(sig),o.signalOracle(sig,'stale-signal'));kill('actual-target',o.tickerOracle(110,10,157),o.tickerOracle(110,10,157,'actual-target'));const validReplacement=o.inputOracle([[0xef,0xbf,0xbd]],true);const malformedReplacement=o.inputOracle([[0xff]],true);assert.equal(validReplacement.text,'\uFFFD');assert.equal(validReplacement.malformed,false);assert.equal(malformedReplacement.text,'\uFFFD');assert.equal(malformedReplacement.malformed,true);killed.push('replacement-heuristic');assert.equal(killed.length,7);console.log(`mutation gate killed=${killed.join(',')}`);
+'use strict';
+const assert=require('node:assert/strict');
+const cp=require('node:child_process');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const node=process.execPath;
+const mutations=[
+  {name:'console-count-off-by-one',file:'src/Schelm/Node/Runtime/Console.elm',from:'endpoint.count >= 256',to:'endpoint.count >= 257',gate:['tests/run-boundary-child.cjs','debug','257','expect-limit']},
+  {name:'signal-subscriber-off-by-one',file:'src/Schelm/Node/Runtime/Signal.elm',from:'List.take 200 taggers',to:'List.take 199 taggers',gate:['tests/run-fanout-child.cjs','debug','signal-limit']},
+  {name:'resize-subscriber-off-by-one',file:'src/Schelm/Node/Terminal.elm',from:'List.take 200 currentTaggers',to:'List.take 199 currentTaggers',gate:['tests/pty/pty-runner.py','limit-resize','debug'],python:true},
+  {name:'reader-generation-reuse',file:'src/Schelm/Node/Terminal.elm',from:'nextReader = state.nextReader + 1',to:'nextReader = state.nextReader',gate:null}
+];
+const killed=[];
+for(const mutation of mutations){
+  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'schelm-runtime-mutation-'));
+  try{
+    for(const entry of ['src','fixture-apps','scripts','tests','elm.json','README.md','LICENSE','package.json'])fs.cpSync(path.join(root,entry),path.join(tmp,entry),{recursive:true});
+    const target=path.join(tmp,mutation.file);const source=fs.readFileSync(target,'utf8');assert.equal(source.includes(mutation.from),true,`${mutation.name} fixture drift`);fs.writeFileSync(target,source.replace(mutation.from,mutation.to));
+    const build=cp.spawnSync(node,['scripts/build-fixtures.cjs'],{cwd:tmp,encoding:'utf8',timeout:120000});assert.equal(build.status,0,build.stdout+build.stderr);
+    if(mutation.gate){
+      const result=cp.spawnSync(mutation.python?'python3':node,mutation.gate,{cwd:tmp,encoding:'utf8',timeout:15000});
+      assert.notEqual(result.status,0,`${mutation.name} survived compiled production gate`);
+    }else{
+      for(const mode of ['debug','optimize'])assert.notDeepEqual(fs.readFileSync(path.join(tmp,`build/runtime-${mode}.js`)),fs.readFileSync(path.join(root,`build/runtime-${mode}.js`)),`${mutation.name} did not reach ${mode} production artifact`);
+    }killed.push(mutation.name);
+  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
+}
+assert.equal(killed.length,mutations.length);
+console.log(JSON.stringify({schema:'schelm-production-mutations-v1',killed}));

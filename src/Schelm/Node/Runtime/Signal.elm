@@ -30,7 +30,7 @@ subMap f (Listen signal tagger) =
 
 
 type alias Slot msg =
-    { generation : Int, taggers : List (Event -> msg), listener : Maybe Process.Id }
+    { generation : Int, taggers : List (Event -> msg), rejected : Int, listener : Maybe Process.Id }
 
 
 type alias State msg =
@@ -46,7 +46,7 @@ type alias Router msg =
 
 
 empty =
-    { generation = 0, taggers = [], listener = Nothing }
+    { generation = 0, taggers = [], rejected = 0, listener = Nothing }
 
 
 init =
@@ -77,13 +77,30 @@ sync router signal taggers state =
 
         accepted =
             List.take 200 taggers
+
+        rejected =
+            List.drop 200 taggers
+
+        rejectedCount =
+            List.length rejected
+
+        newlyRejected =
+            List.drop old.rejected rejected
+
+        notifyLimit next =
+            List.foldl
+                (\tagger task -> task |> Task.andThen (\_ -> Platform.sendToApp router (tagger (SubscriberLimit signal))))
+                (Task.succeed ())
+                newlyRejected
+                |> Task.map (\_ -> next)
     in
     case ( accepted, old.listener ) of
         ( [], Just pid ) ->
-            Process.kill pid |> Task.map (\_ -> set signal { old | generation = old.generation + 1, taggers = [], listener = Nothing } state)
+            Process.kill pid
+                |> Task.andThen (\_ -> notifyLimit (set signal { old | generation = old.generation + 1, taggers = [], rejected = rejectedCount, listener = Nothing } state))
 
         ( [], Nothing ) ->
-            Task.succeed (set signal { old | taggers = [] } state)
+            notifyLimit (set signal { old | taggers = [], rejected = rejectedCount } state)
 
         ( _ :: _, Nothing ) ->
             let
@@ -92,10 +109,10 @@ sync router signal taggers state =
             in
             Elm.Kernel.SchelmRuntime.attachSignal (signalInt signal) (\_ -> Platform.sendToSelf router (Fired signal generation))
                 |> Process.spawn
-                |> Task.map (\pid -> set signal { generation = generation, taggers = accepted, listener = Just pid } state)
+                |> Task.andThen (\pid -> notifyLimit (set signal { generation = generation, taggers = accepted, rejected = rejectedCount, listener = Just pid } state))
 
         ( _ :: _, Just _ ) ->
-            Task.succeed (set signal { old | taggers = accepted } state)
+            notifyLimit (set signal { old | taggers = accepted, rejected = rejectedCount } state)
 
 
 onSelfMsg router (Fired signal generation) state =

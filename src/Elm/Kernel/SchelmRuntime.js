@@ -63,4 +63,4 @@ var _SchelmRuntime_read = function(id){return __Scheduler_binding(function(cb){
   if(lease.ended||process.stdin.readableEnded){lease.ended=true;flush();return function(){};}
   process.stdin.once('data',data);process.stdin.once('end',end);process.stdin.resume();return cleanup;
 });};
-var _SchelmRuntime_attachResize = function(send){return __Scheduler_binding(function(_cb){var listener=function(){if(process.stdout.columns>0&&process.stdout.rows>0)__Scheduler_rawSpawn(send({__$columns:process.stdout.columns,__$rows:process.stdout.rows}));};process.stdout.on('resize',listener);return function(){process.stdout.off('resize',listener);};});};
+var _SchelmRuntime_attachResize = function(id){return function(send){return __Scheduler_binding(function(_cb){if(!$terminalLease||$terminalLease.id!==id)return function(){};var listener=function(){if($terminalLease&&$terminalLease.id===id&&process.stdout.columns>0&&process.stdout.rows>0)__Scheduler_rawSpawn(send({__$columns:process.stdout.columns,__$rows:process.stdout.rows}));};process.stdout.on('resize',listener);return function(){process.stdout.off('resize',listener);};});};};

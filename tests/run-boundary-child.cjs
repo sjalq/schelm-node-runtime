@@ -7,6 +7,7 @@ app.ports.report.subscribe(event => {
   events.push(event);
   if (events.length === count) {
     process.stdout.write(JSON.stringify(events));
+    if (process.argv[4] === 'expect-limit' && events.filter(x => x.outcome === 'count').length !== 1) process.exit(91);
     process.exit(0);
   }
 });

@@ -1,10 +1,11 @@
 'use strict';
 const mode = process.argv[2];
 const subsystem = process.argv[3];
-const app = require(`../build/runtime-${mode}.js`).Elm.Main.init({ flags: 'ordinary' });
+const app = require(`../build/runtime-${mode}.js`).Elm.Main.init({ flags: subsystem === 'console' ? 'replay-console' : 'ordinary' });
 const events = [];
 app.ports.report.subscribe(event => {
   events.push(event);
+  if (subsystem === 'console' && event.startsWith('replay-console:') && events.length === 257) finish();
   if (subsystem === 'signal' && event === 'signal') finish();
   if (subsystem === 'ticker' && /^\d+$/.test(event)) finish();
 });
