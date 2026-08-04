@@ -16,72 +16,60 @@ type Msg
 
 
 type alias Model =
-    { settled : Int }
+    { count : Int }
 
 
-main : Program () Model Msg
+main : Program Int Model Msg
 main =
-    Platform.worker { init = \_ -> ( { settled = 0 }, Task.attempt Ready (Runtime.initialize Runtime.emptySelection) ), update = update, subscriptions = always Sub.none }
-
-
-initError error =
-    case error of
-        Runtime.UnsupportedRuntime ->
-            "unsupported"
-
-        Runtime.TooManyArguments ->
-            "args-count"
-
-        Runtime.ArgumentTooLarge ->
-            "arg-large"
-
-        Runtime.ArgumentsTooLarge ->
-            "args-large"
-
-        Runtime.ExecutablePathTooLarge ->
-            "exec-large"
-
-        Runtime.EnvironmentValueTooLarge _ ->
-            "env-large"
-
-        Runtime.SelectedEnvironmentTooLarge ->
-            "env-total"
-
-        Runtime.InvalidHostText _ ->
-            "host-text"
+    Platform.worker
+        { init = \count -> ( { count = count }, Task.attempt Ready (Runtime.initialize Runtime.emptySelection) )
+        , update = update
+        , subscriptions = always Sub.none
+        }
 
 
 update msg model =
     case msg of
         Ready (Ok runtime) ->
             let
-                values =
-                    [ "", "a", "bb" ]
-
-                make i raw =
-                    case Console.text raw of
+                make id =
+                    case Console.text "" of
                         Ok value ->
-                            Console.write (Console.stdout runtime) value (Wrote i)
+                            Console.write (Console.stdout runtime) value (Wrote id)
 
                         Err _ ->
                             Cmd.none
             in
-            ( model, Cmd.batch (List.indexedMap make values) )
+            ( model, Cmd.batch (List.map make (List.range 0 (model.count - 1))) )
 
-        Ready (Err error) ->
-            ( model, report (E.object [ ( "kind", E.string "init-error" ), ( "error", E.string (initError error) ) ]) )
+        Ready (Err _) ->
+            ( model, report (event "init-error" -1) )
 
         Wrote id result ->
-            let
-                next =
-                    { model | settled = model.settled + 1 }
-
-                outcome =
-                    case result of
+            ( model
+            , report
+                (event
+                    (case result of
                         Ok _ ->
                             "ok"
 
+                        Err Console.TooManyWrites ->
+                            "count"
+
+                        Err Console.BackpressureLimit ->
+                            "bytes"
+
                         Err _ ->
                             "error"
-            in
-            ( next, report (E.object [ ( "kind", E.string "settle" ), ( "id", E.int id ), ( "outcome", E.string outcome ) ]) )
+                    )
+                    id
+                )
+            )
+
+
+event outcome id =
+    E.object
+        [ ( "kind", E.string "settle" )
+        , ( "id", E.int id )
+        , ( "outcome", E.string outcome )
+        ]
