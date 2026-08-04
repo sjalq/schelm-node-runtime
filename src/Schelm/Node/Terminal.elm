@@ -234,17 +234,33 @@ applyCommands router commands state =
                     let
                         ( matching, remaining ) =
                             takeSetRaw terminal mode rest
+
+                        callbacks =
+                            callback :: matching
                     in
-                    applyControl router (callback :: matching) (Elm.Kernel.SchelmRuntime.setRaw (terminalId terminal) (mode == Raw)) state
-                        |> Task.andThen (applyCommands router remaining)
+                    if state.terminal /= Just terminal then
+                        sendControlCallbacks router callbacks (Err Released) state
+                            |> Task.andThen (applyCommands router remaining)
+
+                    else
+                        applyControl router callbacks (Elm.Kernel.SchelmRuntime.setRaw (terminalId terminal) (mode == Raw)) state
+                            |> Task.andThen (applyCommands router remaining)
 
                 Release terminal callback ->
                     let
                         ( matching, remaining ) =
                             takeRelease terminal rest
+
+                        callbacks =
+                            callback :: matching
                     in
-                    applyRelease router terminal (callback :: matching) state
-                        |> Task.andThen (applyCommands router remaining)
+                    if state.terminal /= Just terminal then
+                        sendControlCallbacks router callbacks (Err Released) state
+                            |> Task.andThen (applyCommands router remaining)
+
+                    else
+                        applyRelease router terminal callbacks state
+                            |> Task.andThen (applyCommands router remaining)
 
                 Recover _ callback ->
                     let
@@ -446,27 +462,35 @@ applyCommand router command_ state =
                                 send router callback (Err AcquireFailed) state
                     )
 
-        SetRaw (Terminal id _) mode callback ->
-            Elm.Kernel.SchelmRuntime.setRaw id (mode == Raw) |> Task.andThen (\outcome -> send router callback (control outcome) state)
+        SetRaw ((Terminal id _) as terminal) mode callback ->
+            if state.terminal /= Just terminal then
+                send router callback (Err Released) state
 
-        Release (Terminal id _) callback ->
-            cancelRead state
-                |> Task.andThen
-                    (\cancelled ->
-                        Elm.Kernel.SchelmRuntime.release id
-                            |> Task.andThen
-                                (\outcome ->
-                                    let
-                                        next =
-                                            if outcome == "ok" then
-                                                { cancelled | terminal = Nothing, reader = Nothing }
+            else
+                Elm.Kernel.SchelmRuntime.setRaw id (mode == Raw) |> Task.andThen (\outcome -> send router callback (control outcome) state)
 
-                                            else
-                                                cancelled
-                                    in
-                                    send router callback (control outcome) next
-                                )
-                    )
+        Release ((Terminal id _) as terminal) callback ->
+            if state.terminal /= Just terminal then
+                send router callback (Err Released) state
+
+            else
+                cancelRead state
+                    |> Task.andThen
+                        (\cancelled ->
+                            Elm.Kernel.SchelmRuntime.release id
+                                |> Task.andThen
+                                    (\outcome ->
+                                        let
+                                            next =
+                                                if outcome == "ok" then
+                                                    { cancelled | terminal = Nothing, reader = Nothing }
+
+                                                else
+                                                    cancelled
+                                        in
+                                        send router callback (control outcome) next
+                                    )
+                        )
 
         Recover _ callback ->
             Elm.Kernel.SchelmRuntime.recover |> Task.andThen (\outcome -> send router callback (control outcome) state)

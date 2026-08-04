@@ -17,6 +17,7 @@ port report : String -> Cmd msg
 type Msg
     = Ready (Result Runtime.InitError Runtime.Runtime)
     | Wrote (Result Console.WriteError ())
+    | SuiteWrote Int (Result Console.WriteError ())
     | TerminalReady (Result Terminal.AcquireError Terminal.Terminal)
     | Controlled (Result Terminal.ControlError ())
     | Recovered (Result Terminal.ControlError ())
@@ -33,7 +34,7 @@ type Msg
     | ShareRecovered (Result Terminal.ControlError ())
     | ShareTickerReady (Result Ticker.StartError Ticker.Ticker)
     | ReplayReaderReady (Result Terminal.ReaderError Terminal.InputReader)
-    | ReplayReadDone (Result Terminal.InputError Terminal.InputPiece)
+    | ReplayReadDone Int (Result Terminal.InputError Terminal.InputPiece)
 
 
 type alias Model =
@@ -63,19 +64,31 @@ subscriptions model =
     Sub.batch
         [ case model.runtime of
             Just runtime ->
-                Signal.onSignal runtime Signal.Interrupt SignalEvent |> Sub.map identity
+                if model.mode == "fanout-signal" then
+                    Sub.batch (List.repeat 200 (Signal.onSignal runtime Signal.Interrupt SignalEvent))
+
+                else
+                    Signal.onSignal runtime Signal.Interrupt SignalEvent |> Sub.map identity
 
             Nothing ->
                 Sub.none
         , case model.terminal of
             Just terminal ->
-                Terminal.onResize terminal ResizeEvent |> Sub.map identity
+                if model.mode == "pty-fanout-resize" then
+                    Sub.batch (List.repeat 200 (Terminal.onResize terminal ResizeEvent))
+
+                else
+                    Terminal.onResize terminal ResizeEvent |> Sub.map identity
 
             Nothing ->
                 Sub.none
         , case model.ticker of
             Just ticker ->
-                Ticker.onTick ticker TickEvent |> Sub.map identity
+                if model.mode == "fanout-ticker" then
+                    Sub.batch (List.repeat 200 (Ticker.onTick ticker TickEvent))
+
+                else
+                    Ticker.onTick ticker TickEvent |> Sub.map identity
 
             Nothing ->
                 Sub.none
@@ -117,7 +130,10 @@ update msg model =
             in
             ( { model | runtime = Just runtime }
             , Cmd.batch
-                (if model.mode == "pty-share" then
+                (if model.mode == "console-suite" then
+                    List.map (\id -> Console.write (Console.stdout runtime) output (SuiteWrote id)) (List.range 0 2)
+
+                 else if model.mode == "pty-share" then
                     List.repeat 65 (Terminal.acquire runtime ShareAcquired)
 
                  else if model.mode == "pty-input-replay" then
@@ -125,6 +141,9 @@ update msg model =
 
                  else if model.mode == "share-ticker" then
                     List.repeat 65 (Ticker.start runtime duration ShareTickerReady)
+
+                 else if model.mode == "fanout-ticker" then
+                    [ Ticker.start runtime duration TickerReady ]
 
                  else if String.startsWith "pty-" model.mode then
                     [ Terminal.acquire runtime TerminalReady ]
@@ -172,6 +191,9 @@ update msg model =
 
         Wrote _ ->
             ( model, Cmd.none )
+
+        SuiteWrote id result ->
+            ( model, report ("console:" ++ String.fromInt id ++ ":" ++ consoleResult result) )
 
         Controlled (Ok _) ->
             case model.terminal of
@@ -275,15 +297,23 @@ update msg model =
             ( model, report (shareControlResult "recover" result) )
 
         ReplayReaderReady (Ok reader) ->
-            ( { model | reader = Just reader }, Terminal.read reader ReplayReadDone )
+            ( { model | reader = Just reader }, Terminal.read reader (ReplayReadDone 1) )
 
         ReplayReaderReady (Err _) ->
             ( model, report "input-reader-error" )
 
-        ReplayReadDone (Ok piece) ->
-            ( model, report ("input:" ++ Terminal.inputText piece ++ ":" ++ String.fromInt (Terminal.inputBytes piece) ++ ":" ++ malformedLabel (Terminal.inputHadMalformedUtf8 piece)) )
+        ReplayReadDone readNumber (Ok piece) ->
+            case ( readNumber, model.reader ) of
+                ( 1, Just reader ) ->
+                    ( model, Cmd.batch [ report ("input:" ++ Terminal.inputText piece ++ ":" ++ String.fromInt (Terminal.inputBytes piece) ++ ":" ++ malformedLabel (Terminal.inputHadMalformedUtf8 piece)), Terminal.read reader (ReplayReadDone 2) ] )
 
-        ReplayReadDone (Err _) ->
+                _ ->
+                    ( model, report "input-unexpected-piece" )
+
+        ReplayReadDone _ (Err (Terminal.InputEnded malformed)) ->
+            ( model, report ("input-end:" ++ malformedLabel malformed) )
+
+        ReplayReadDone _ (Err _) ->
             ( model, report "input-read-error" )
 
         ShareTickerReady result ->
@@ -300,6 +330,21 @@ update msg model =
                         "ticker-other-error"
                 )
             )
+
+
+consoleResult result =
+    case result of
+        Ok _ ->
+            "ok"
+
+        Err Console.BrokenPipe ->
+            "pipe"
+
+        Err Console.Closed ->
+            "closed"
+
+        Err _ ->
+            "other"
 
 
 malformedLabel malformed =
