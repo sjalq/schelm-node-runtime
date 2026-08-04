@@ -216,7 +216,38 @@ init =
 
 
 onEffects router commands subscriptions state =
-    applyCommands router commands state |> Task.andThen (syncResize router subscriptions)
+    closeReaders commands state
+        |> Task.andThen (applyCommands router commands)
+        |> Task.andThen (syncResize router subscriptions)
+
+
+closeReaders commands state =
+    case commands of
+        [] ->
+            Task.succeed state
+
+        (CloseInput reader) :: rest ->
+            closeReader reader state |> Task.andThen (closeReaders rest)
+
+        _ :: rest ->
+            closeReaders rest state
+
+
+closeReader reader state =
+    if state.reader /= Just reader then
+        Task.succeed state
+
+    else
+        case state.reading of
+            Nothing ->
+                Task.succeed { state | reader = Nothing }
+
+            Just ( activeReader, _, pid ) ->
+                if activeReader /= reader then
+                    Task.succeed { state | reader = Nothing }
+
+                else
+                    Process.kill pid |> Task.map (\_ -> { state | reader = Nothing, reading = Nothing, nextRead = state.nextRead + 1 })
 
 
 applyCommands router commands state =
@@ -515,25 +546,12 @@ applyCommand router command_ state =
                         in
                         send router callback (Ok reader) { state | reader = Just reader, nextReader = state.nextReader + 1 }
 
-        CloseInput reader ->
-            if state.reader /= Just reader then
-                Task.succeed state
-
-            else
-                case state.reading of
-                    Nothing ->
-                        Task.succeed { state | reader = Nothing }
-
-                    Just ( activeReader, _, pid ) ->
-                        if activeReader /= reader then
-                            Task.succeed { state | reader = Nothing }
-
-                        else
-                            Process.kill pid |> Task.map (\_ -> { state | reader = Nothing, reading = Nothing, nextRead = state.nextRead + 1 })
+        CloseInput _ ->
+            Task.succeed state
 
         Read ((InputReader id _) as reader) callback ->
             if state.reader /= Just reader then
-                Task.succeed state
+                send router callback (Err ReaderClosed) state
 
             else
                 case state.reading of

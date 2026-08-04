@@ -36,6 +36,8 @@ type Msg
     | ShareTickerReady (Result Ticker.StartError Ticker.Ticker)
     | ReplayReaderReady (Result Terminal.ReaderError Terminal.InputReader)
     | ReplayReadDone Int (Result Terminal.InputError Terminal.InputPiece)
+    | ResizeReleased (Result Terminal.ControlError ())
+    | ResizeReacquired (Result Terminal.AcquireError Terminal.Terminal)
 
 
 type alias Model =
@@ -46,6 +48,7 @@ type alias Model =
     , mode : String
     , shareCount : Int
     , previousReader : Maybe Terminal.InputReader
+    , previousTerminal : Maybe Terminal.Terminal
     }
 
 
@@ -59,7 +62,7 @@ main =
 
 
 empty =
-    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing, mode = "ordinary", shareCount = 0, previousReader = Nothing }
+    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing, mode = "ordinary", shareCount = 0, previousReader = Nothing, previousTerminal = Nothing }
 
 
 subscriptions model =
@@ -77,7 +80,13 @@ subscriptions model =
 
             Nothing ->
                 Sub.none
-        , case model.terminal of
+        , case
+            if model.mode == "pty-resize-stale" || model.mode == "pty-resize-released" then
+                model.previousTerminal
+
+            else
+                model.terminal
+          of
             Just terminal ->
                 if model.mode == "pty-input-replay" then
                     Sub.none
@@ -184,6 +193,12 @@ update msg model =
             , if model.mode == "pty-input-replay" || model.mode == "pty-input-aba" then
                 Terminal.openInput terminal ReplayReaderReady
 
+              else if model.mode == "pty-resize-released" || model.mode == "pty-resize-stale" then
+                Terminal.release terminal ResizeReleased
+
+              else if model.mode == "pty-resize-current" then
+                report "resize-current-ready"
+
               else
                 Cmd.batch [ Terminal.setRawMode terminal Terminal.Raw Controlled, Terminal.openInput terminal ReaderReady ]
             )
@@ -202,7 +217,7 @@ update msg model =
 
         SignalEvent event ->
             if model.mode == "pty-input-aba" && model.previousReader /= Nothing && model.reader == Nothing then
-                ( model, Terminal.openInput (Maybe.withDefault (crash ()) model.terminal) ReplayReaderReady )
+                ( model, Maybe.map (\terminal -> Terminal.openInput terminal ReplayReaderReady) model.terminal |> Maybe.withDefault Cmd.none )
 
             else
                 ( model
@@ -343,10 +358,7 @@ update msg model =
                 case model.previousReader of
                     Nothing ->
                         ( { model | reader = Nothing, previousReader = Just reader }
-                        , Cmd.batch
-                            [ Terminal.closeInput reader
-                            , Terminal.openInput (Maybe.withDefault (crash ()) model.terminal) ReplayReaderReady
-                            ]
+                        , Terminal.closeInput reader
                         )
 
                     Just stale ->
@@ -362,8 +374,33 @@ update msg model =
             else
                 ( { model | reader = Just reader }, Terminal.read reader (ReplayReadDone 1) )
 
+        ResizeReleased (Ok ()) ->
+            if model.mode == "pty-resize-stale" then
+                ( { model | terminal = Nothing, previousTerminal = model.terminal }
+                , Maybe.withDefault Cmd.none (Maybe.map (\runtime -> Terminal.acquire runtime ResizeReacquired) model.runtime)
+                )
+
+            else
+                ( { model | terminal = Nothing, previousTerminal = model.terminal }, report "resize-released-ready" )
+
+        ResizeReleased (Err _) ->
+            ( model, report "resize-release-error" )
+
+        ResizeReacquired (Ok terminal) ->
+            ( { model | terminal = Just terminal }, report "resize-stale-ready" )
+
+        ResizeReacquired (Err _) ->
+            ( model, report "resize-reacquire-error" )
+
         ReplayReaderReady (Err _) ->
             ( model, report "input-reader-error" )
+
+        ReplayReadDone 0 (Err Terminal.ReaderClosed) ->
+            if model.reader == Nothing then
+                ( model, Maybe.map (\terminal -> Terminal.openInput terminal ReplayReaderReady) model.terminal |> Maybe.withDefault Cmd.none )
+
+            else
+                ( model, report "stale-reader-rejected" )
 
         ReplayReadDone 0 _ ->
             ( model, report "stale-read-delivered" )

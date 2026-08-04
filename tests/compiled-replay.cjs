@@ -28,4 +28,4 @@ for (const mode of ['debug', 'optimize']) {
   assert.deepEqual(inputEvents, expected.input, `${mode} input ordered replay`);
   assert.deepEqual(oracle.inputOracle([[255]], true), { text: '�', malformed: true }, `${mode} input oracle equality`);
 }
-console.log('compiled console/signal/input/ticker ordered replay and oracle equality pass');
+console.log(JSON.stringify({schema:'compiled-replay-evidence-v1',subsystems:{console:{casesPerMode:1,ordered:true,oracleEquality:false},signal:{casesPerMode:1,ordered:true,oracleEquality:false},input:{casesPerMode:1,ordered:true,oracleEquality:true},ticker:{casesPerMode:1,ordered:true,oracleEquality:true}},modes:['debug','optimize']}));

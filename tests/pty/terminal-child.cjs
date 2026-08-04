@@ -29,6 +29,10 @@ app.ports.report.subscribe(line => {
     if (resizeCount === 200) { process.stdout.write('RESIZE_200\n'); process.exit(0); }
   }
   if (mode === 'input-aba' && line === 'aba-ready') process.stdout.write('ABA_READY\n');
+  if (mode.startsWith('resize-') && line === `${mode}-ready`) process.stdout.write('RESIZE_READY\n');
+  if (mode.startsWith('resize-') && line === 'resize') {
+    process.stdout.write('RESIZE_DELIVERED\n', () => process.exit(mode === 'resize-current' ? 0 : 95));
+  }
   if ((mode === 'input-replay' || mode === 'input-aba') && (line.startsWith('input') || line === 'stale-read-delivered')) {
     inputReplay.push(line);
     process.stdout.write(`${line}\n`);
