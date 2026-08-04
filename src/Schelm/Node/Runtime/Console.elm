@@ -233,10 +233,39 @@ onSelfMsg router (WriteDone key generation id outcome) state =
                     next =
                         put key cleared state
                 in
-                send router pending.callback problem next |> Task.andThen (start router key)
+                case terminal of
+                    Just terminalProblem ->
+                        send router pending.callback problem next
+                            |> Task.andThen (settleQueued router key terminalProblem)
+
+                    Nothing ->
+                        send router pending.callback problem next |> Task.andThen (start router key)
 
         Nothing ->
             Task.succeed state
+
+
+settleQueued router key problem state =
+    let
+        endpoint =
+            Dict.get key state.endpoints |> Maybe.withDefault empty
+
+        pending =
+            endpoint.front ++ List.reverse endpoint.back
+
+        closed =
+            { endpoint | front = [], back = [], count = 0, bytes = 0, inFlight = Nothing }
+    in
+    sendPending router pending (Err problem) (put key closed state)
+
+
+sendPending router pending result state =
+    case pending of
+        [] ->
+            Task.succeed state
+
+        item :: rest ->
+            send router item.callback result state |> Task.andThen (sendPending router rest result)
 
 
 dequeue endpoint =
