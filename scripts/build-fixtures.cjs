@@ -31,8 +31,11 @@ function entries(buf) { let pos=16,n=Number(buf.readBigUInt64BE(8)),xs=[]; for(l
 function add(buf,author,project){let {n,xs}=entries(buf),key=`${author}/${project}`;if(xs.some(x=>`${x.author}/${x.project}`===key))return buf;let index=xs.findIndex(x=>`${x.author}/${x.project}`>key),at=index<0?buf.length:xs[index].start;let entry=Buffer.concat([Buffer.from([author.length]),Buffer.from(author),Buffer.from([project.length]),Buffer.from(project),Buffer.from([1,0,0]),Buffer.alloc(8)]);let out=Buffer.concat([buf.subarray(0,at),entry,buf.subarray(at)]);out.writeBigUInt64BE(buf.readBigUInt64BE(0)+1n,0);out.writeBigUInt64BE(BigInt(n+1),8);return out;}
 fs.writeFileSync(path.join(packages, 'registry.dat'), add(registry, 'sjalq', 'schelm-node-runtime'));
 fs.mkdirSync(path.join(repo, 'build'), { recursive: true });
-for (const mode of ['debug', 'optimize']) {
-  const args = ['make', 'src/Main.elm', '--output', path.join(repo, `build/runtime-${mode}.js`)];
+for (const app of ['production', 'boundary']) fs.rmSync(path.join(root, `fixture-apps/${app}/elm-stuff`), { recursive: true, force: true });
+for (const app of ['production', 'boundary']) for (const mode of ['debug', 'optimize']) {
+  fs.rmSync(path.join(home, '0.19.2/packages/sjalq/schelm-node-runtime/artifacts.dat'), { force: true });
+  const stem = app === 'production' ? 'runtime' : 'boundary';
+  const args = ['make', 'src/Main.elm', '--output', path.join(repo, `build/${stem}-${mode}.js`)];
   if (mode === 'optimize') args.push('--optimize');
-  cp.execFileSync(compiler, args, { cwd: path.join(root, 'fixture-apps/production'), stdio: 'inherit', env: {...process.env, ELM_HOME: home} });
+  cp.execFileSync(compiler, args, { cwd: path.join(root, `fixture-apps/${app}`), stdio: 'inherit', env: {...process.env, ELM_HOME: home} });
 }

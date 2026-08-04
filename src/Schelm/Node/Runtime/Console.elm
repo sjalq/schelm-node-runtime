@@ -1,7 +1,9 @@
 effect module Schelm.Node.Runtime.Console where { command = ConsoleCmd } exposing (Console, Text, TextError(..), WriteError(..), line, stderr, stdout, text, textBytes, textString, write)
 
+import Dict exposing (Dict)
 import Elm.Kernel.SchelmRuntime
 import Platform
+import Process
 import Schelm.Node.Runtime exposing (Runtime)
 import Task exposing (Task)
 
@@ -48,8 +50,7 @@ line (Text value width) =
         Err WriteTooLarge
 
     else
-        Ok
-            (Text (value ++ "\n") (width + 1))
+        Ok (Text (value ++ "\n") (width + 1))
 
 
 textString (Text value _) =
@@ -80,59 +81,169 @@ cmdMap f (Write endpoint value callback) =
     Write endpoint value (callback >> f)
 
 
-type State msg
-    = State (Maybe msg)
+type alias Pending msg =
+    { id : Int, text : Text, callback : Result WriteError () -> msg }
+
+
+type alias Endpoint msg =
+    { front : List (Pending msg), back : List (Pending msg), count : Int, bytes : Int, inFlight : Maybe (Pending msg), terminal : Maybe WriteError, generation : Int }
+
+
+type alias State msg =
+    { nextId : Int, endpoints : Dict Int (Endpoint msg) }
 
 
 type SelfMsg
-    = None
+    = WriteDone Int Int Int String
 
 
 type alias Router msg =
     Platform.Router msg SelfMsg
 
 
+empty =
+    { front = [], back = [], count = 0, bytes = 0, inFlight = Nothing, terminal = Nothing, generation = 0 }
+
+
 init =
-    Task.succeed (State Nothing)
+    Task.succeed { nextId = 0, endpoints = Dict.fromList [ ( 0, empty ), ( 1, empty ) ] }
 
 
 onEffects router commands state =
+    applyCommands router commands state
+
+
+applyCommands router commands state =
+    case commands of
+        [] ->
+            Task.succeed state
+
+        command_ :: rest ->
+            applyCommand router command_ state |> Task.andThen (applyCommands router rest)
+
+
+applyCommand router (Write (Console key) value callback) state =
     let
-        accepted =
-            List.take 256 commands
+        endpoint =
+            Dict.get key state.endpoints |> Maybe.withDefault empty
 
-        bytes =
-            List.sum (List.map (\(Write _ value _) -> textBytes value) accepted)
+        width =
+            textBytes value
     in
-    if List.length commands > 256 then
-        run router (List.take 256 commands) state
-            |> Task.andThen (\next -> reject router TooManyWrites (List.drop 256 commands) next)
+    case endpoint.terminal of
+        Just problem ->
+            send router callback (Err problem) state
 
-    else if bytes > 1048576 then
-        reject router BackpressureLimit commands state
+        Nothing ->
+            if endpoint.count >= 256 then
+                send router callback (Err TooManyWrites) state
 
-    else
-        run router accepted state
+            else if endpoint.bytes + width > 1048576 then
+                send router callback (Err BackpressureLimit) state
+
+            else if width == 0 then
+                send router callback (Ok ()) state
+
+            else
+                let
+                    pending =
+                        { id = state.nextId, text = value, callback = callback }
+
+                    queued =
+                        { endpoint | back = pending :: endpoint.back, count = endpoint.count + 1, bytes = endpoint.bytes + width }
+
+                    next =
+                        put key queued { state | nextId = state.nextId + 1 }
+                in
+                start router key next
 
 
-run router commands state =
-    case commands of
-        [] ->
+start router key state =
+    let
+        endpoint =
+            Dict.get key state.endpoints |> Maybe.withDefault empty
+    in
+    case endpoint.inFlight of
+        Just _ ->
             Task.succeed state
 
-        (Write (Console endpoint) value callback) :: rest ->
-            Elm.Kernel.SchelmRuntime.write endpoint (textString value)
-                |> Task.andThen (\outcome -> Platform.sendToApp router (callback (decode outcome)))
-                |> Task.andThen (\_ -> run router rest state)
+        Nothing ->
+            case dequeue endpoint of
+                Nothing ->
+                    Task.succeed state
+
+                Just ( pending, remaining ) ->
+                    let
+                        generation =
+                            endpoint.generation
+
+                        running =
+                            { remaining | inFlight = Just pending }
+                    in
+                    Elm.Kernel.SchelmRuntime.write key (textString pending.text)
+                        |> Task.andThen (\outcome -> Platform.sendToSelf router (WriteDone key generation pending.id outcome))
+                        |> Process.spawn
+                        |> Task.map (\_ -> put key running state)
 
 
-reject router problem commands state =
-    case commands of
-        [] ->
+onSelfMsg router (WriteDone key generation id outcome) state =
+    let
+        endpoint =
+            Dict.get key state.endpoints |> Maybe.withDefault empty
+    in
+    case endpoint.inFlight of
+        Just pending ->
+            if endpoint.generation /= generation || pending.id /= id then
+                Task.succeed state
+
+            else
+                let
+                    problem =
+                        decode outcome
+
+                    terminal =
+                        case problem of
+                            Err BrokenPipe ->
+                                Just BrokenPipe
+
+                            Err Closed ->
+                                Just Closed
+
+                            _ ->
+                                endpoint.terminal
+
+                    cleared =
+                        { endpoint | inFlight = Nothing, count = endpoint.count - 1, bytes = endpoint.bytes - textBytes pending.text, terminal = terminal }
+
+                    next =
+                        put key cleared state
+                in
+                send router pending.callback problem next |> Task.andThen (start router key)
+
+        Nothing ->
             Task.succeed state
 
-        (Write _ _ callback) :: rest ->
-            Platform.sendToApp router (callback (Err problem)) |> Task.andThen (\_ -> reject router problem rest state)
+
+dequeue endpoint =
+    case endpoint.front of
+        item :: rest ->
+            Just ( item, { endpoint | front = rest } )
+
+        [] ->
+            case List.reverse endpoint.back of
+                [] ->
+                    Nothing
+
+                item :: rest ->
+                    Just ( item, { endpoint | front = rest, back = [] } )
+
+
+put key endpoint state =
+    { state | endpoints = Dict.insert key endpoint state.endpoints }
+
+
+send router callback result state =
+    Platform.sendToApp router (callback result) |> Task.map (\_ -> state)
 
 
 decode outcome =
@@ -148,7 +259,3 @@ decode outcome =
 
         _ ->
             Err WriteFailed
-
-
-onSelfMsg _ _ state =
-    Task.succeed state

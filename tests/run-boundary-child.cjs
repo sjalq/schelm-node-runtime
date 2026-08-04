@@ -1,0 +1,1 @@
+'use strict';const mode=process.argv[2];const app=require(`../build/boundary-${mode}.js`).Elm.Main.init({flags:null});const events=[];app.ports.report.subscribe(x=>{process.stderr.write('EVENT '+JSON.stringify(x)+'\n');events.push(x);if(events.length===3){process.stdout.write(JSON.stringify(events));process.exit(0);}});setTimeout(()=>process.exit(90),2000);

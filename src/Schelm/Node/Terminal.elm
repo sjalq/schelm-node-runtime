@@ -192,22 +192,22 @@ subMap f (Resize terminal tagger) =
 type alias State msg =
     { terminal : Maybe Terminal
     , reader : Maybe InputReader
-    , reading : Bool
+    , reading : Maybe Process.Id
     , resizeTaggers : List (ResizeEvent -> msg)
     , resizeListener : Maybe Process.Id
     }
 
 
-type SelfMsg
-    = NoSelf
+type SelfMsg msg
+    = ReadDone (Result InputError InputPiece -> msg) (Result InputError InputPiece)
 
 
 type alias Router msg =
-    Platform.Router msg SelfMsg
+    Platform.Router msg (SelfMsg msg)
 
 
 init =
-    Task.succeed { terminal = Nothing, reader = Nothing, reading = False, resizeTaggers = [], resizeListener = Nothing }
+    Task.succeed { terminal = Nothing, reader = Nothing, reading = Nothing, resizeTaggers = [], resizeListener = Nothing }
 
 
 onEffects router commands subscriptions state =
@@ -260,7 +260,7 @@ applyCommand router command_ state =
                         let
                             next =
                                 if outcome == "ok" then
-                                    { state | terminal = Nothing, reader = Nothing, reading = False }
+                                    { state | terminal = Nothing, reader = Nothing, reading = Nothing }
 
                                 else
                                     state
@@ -284,33 +284,41 @@ applyCommand router command_ state =
                     send router callback (Ok reader) { state | reader = Just reader }
 
         CloseInput _ ->
-            Task.succeed { state | reader = Nothing, reading = False }
+            case state.reading of
+                Nothing ->
+                    Task.succeed { state | reader = Nothing }
+
+                Just pid ->
+                    Process.kill pid |> Task.map (\_ -> { state | reader = Nothing, reading = Nothing })
 
         Read (InputReader id) callback ->
-            if state.reading then
-                send router callback (Err InputReadInProgress) state
+            case state.reading of
+                Just _ ->
+                    send router callback (Err InputReadInProgress) state
 
-            else
-                Elm.Kernel.SchelmRuntime.read id
-                    |> Task.andThen
-                        (\raw ->
-                            let
-                                result =
-                                    case raw.kind of
-                                        "piece" ->
-                                            Ok (InputPiece raw.text raw.bytes raw.malformed)
+                Nothing ->
+                    Elm.Kernel.SchelmRuntime.read id
+                        |> Task.andThen
+                            (\raw ->
+                                let
+                                    result =
+                                        case raw.kind of
+                                            "piece" ->
+                                                Ok (InputPiece raw.text raw.bytes raw.malformed)
 
-                                        "end" ->
-                                            Err (InputEnded raw.malformed)
+                                            "end" ->
+                                                Err (InputEnded raw.malformed)
 
-                                        "closed" ->
-                                            Err ReaderClosed
+                                            "closed" ->
+                                                Err ReaderClosed
 
-                                        _ ->
-                                            Err InputFailed
-                            in
-                            send router callback result { state | reading = False }
-                        )
+                                            _ ->
+                                                Err InputFailed
+                                in
+                                Platform.sendToSelf router (ReadDone callback result)
+                            )
+                        |> Process.spawn
+                        |> Task.map (\pid -> { state | reading = Just pid })
 
 
 send router callback result state =
@@ -354,8 +362,9 @@ syncResize router subscriptions state =
                 |> Task.map (\pid -> { state | resizeTaggers = taggers, resizeListener = Just pid })
 
 
-onSelfMsg _ _ state =
-    Task.succeed state
+onSelfMsg router (ReadDone callback result) state =
+    Platform.sendToApp router (callback result)
+        |> Task.map (\_ -> { state | reading = Nothing })
 
 
 color depth =

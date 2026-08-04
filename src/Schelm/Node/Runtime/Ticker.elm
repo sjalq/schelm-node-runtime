@@ -177,11 +177,8 @@ arm router state =
             let
                 generation =
                     state.generation + 1
-
-                wait =
-                    max 10 (ceiling (active.target - active.previous))
             in
-            Elm.Kernel.SchelmRuntime.delay wait
+            Elm.Kernel.SchelmRuntime.delayUntil active.target
                 |> Task.andThen (\facts -> Platform.sendToSelf router (Woke generation facts.wall facts.mono))
                 |> Process.spawn
                 |> Task.map (\pid -> { state | generation = generation, timer = Just pid })

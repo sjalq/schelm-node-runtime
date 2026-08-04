@@ -186,7 +186,7 @@ validateRaw raw =
     else if List.any ((==) Nothing) widths then
         Task.fail (InvalidHostText HostArgument)
 
-    else if List.any (Maybe.withDefault 0 >> (>) 65536) widths then
+    else if List.any (\maybeWidth -> Maybe.withDefault 0 maybeWidth > 65536) widths then
         Task.fail ArgumentTooLarge
 
     else if total > 1048576 then
