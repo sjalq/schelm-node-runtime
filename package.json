@@ -1,0 +1,11 @@
+{
+  "name":"schelm-node-runtime","version":"1.0.0","private":true,"type":"commonjs",
+  "engines":{"node":"24.4.1"},
+  "scripts":{
+    "format":"elm-format --yes src fixture-apps tests/elm",
+    "format:check":"elm-format --validate src fixture-apps tests/elm",
+    "build":"node scripts/build-fixtures.cjs",
+    "test:node":"node --test --test-timeout=60000 tests/node/*.test.cjs",
+    "test":"npm run format:check && npm run build && npm run test:node && node tests/audit.cjs"
+  }
+}
