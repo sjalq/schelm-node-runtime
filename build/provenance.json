@@ -1,7 +1,7 @@
 {
   "schema": "schelm-node-runtime-provenance-v1",
-  "commit": "0d1b9896e5dee69efc575af08832a1cd00c8c8f8",
-  "tree": "51ab48847456bb6935ec25944df8976fcc453775",
+  "commit": "0a086833e2a7095dfa09a32ac83a6dc453dbce75",
+  "tree": "49619709025c4d6d2c584a95d4a85be8445b81a8",
   "dirty": false,
   "compilerAuthorizationCommit": "76bbe44424106c96f915cb24cd7f50d69f5cee0e",
   "compilerBinarySha256": "69987adf7062562b6e6dfd60b6709be3a06feeb90b096b9c84f673f2b97d8654",
@@ -9,10 +9,12 @@
   "nodeBinarySha256": "82e1a4da51b1870fc16495482f47c9bbb634dd02559f80ab5385090123cb034a",
   "platform": "linux-x64",
   "kernel": "6.8.0-124-generic",
-  "sourceDigest": "f19a1b4d09b198dbe58650efda405c09a4ebb6b816aaa4b83a42811e6f13dba7",
+  "sourceDigest": "a2d30cea2301d3c7133c2cdd1d891545766d39bd92310a83f15cdac2d0c120de",
   "artifacts": {
-    "debug": "931ee540550cf744a17c039216d2ce55a6b8ece6771a33d0ea92132b4d020e46",
-    "optimize": "0461ae94a09c5f3f05627a8af1f58f363bf9cc9b5e5820d2d8d916cfbad56cbc",
+    "debug": "0e3416c97e7a4fdf3de7f6a4a7a68c2bfbed5afa46b8ac1c31a25424525122be",
+    "optimize": "52b669aead83346b010453d2e06c194d88d1a5f84b703a84f68f864ff11cb703",
+    "boundaryDebug": "4e487d53bb217f1a278b0b174087cf7bea293b43b416201ac1e9d66bad011ba4",
+    "boundaryOptimize": "cf77ef00403411e3d66f0a3da568d4d1c7d4e8478450d46e641b0810e826929a",
     "apiDebug": "b48573dd407ed483f84ea1a2891ec9271ca667c575d4ec0c52da6842f654d30d",
     "apiOptimize": "4b05af516e65a0c72883dcc0aadc9232b7afaeb970c826e0b15a68ca57def5cc"
   },
