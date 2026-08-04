@@ -106,7 +106,10 @@ init =
 
 
 onEffects router commands subscriptions state =
-    cancelTimer state |> Task.andThen (applyCommands router commands) |> Task.map (withTaggers subscriptions) |> Task.andThen (arm router)
+    cancelTimer state
+        |> Task.andThen (applyCommands router commands)
+        |> Task.map (withTaggers subscriptions)
+        |> Task.andThen (arm router)
 
 
 cancelTimer state =
@@ -124,37 +127,89 @@ applyCommands router commands state =
             Task.succeed state
 
         command_ :: rest ->
-            applyCommand router command_ state |> Task.andThen (applyCommands router rest)
+            case command_ of
+                Stop (Ticker id) ->
+                    applyCommands router rest { state | active = Dict.remove id state.active }
+
+                Start runtime duration callback ->
+                    let
+                        ( matching, remaining ) =
+                            takeMatchingStarts (Clock.timerMilliseconds duration) rest
+
+                        callbacks =
+                            callback :: List.map (\( _, _, cb ) -> cb) matching
+
+                        accepted =
+                            List.take 64 callbacks
+
+                        rejected =
+                            List.drop 64 callbacks
+                    in
+                    applyStart router runtime duration accepted state
+                        |> Task.andThen (sendStartErrors router rejected TooManyStartJoiners)
+                        |> Task.andThen (applyCommands router remaining)
 
 
-applyCommand router command_ state =
-    case command_ of
-        Stop (Ticker id) ->
-            Task.succeed { state | active = Dict.remove id state.active }
-
-        Start runtime duration callback ->
-            if Dict.size state.active >= 64 then
-                Platform.sendToApp router (callback (Err TooManyTickers)) |> Task.map (\_ -> state)
+takeMatchingStarts interval commands =
+    case commands of
+        (Start runtime duration callback) :: rest ->
+            if Clock.timerMilliseconds duration == interval then
+                let
+                    ( matching, remaining ) =
+                        takeMatchingStarts interval rest
+                in
+                ( ( runtime, duration, callback ) :: matching, remaining )
 
             else
-                Clock.monotonicNow runtime
-                    |> Task.andThen
-                        (\(MonotonicTime now) ->
-                            let
-                                id =
-                                    state.next
+                ( [], commands )
 
-                                interval =
-                                    Clock.timerMilliseconds duration
+        _ ->
+            ( [], commands )
 
-                                active =
-                                    { interval = interval, target = now + toFloat interval, previous = now, taggers = [] }
 
-                                next =
-                                    { state | next = id + 1, active = Dict.insert id active state.active }
-                            in
-                            Platform.sendToApp router (callback (Ok (Ticker id))) |> Task.map (\_ -> next)
-                        )
+applyStart router runtime duration callbacks state =
+    if Dict.size state.active >= 64 then
+        sendStartErrors router callbacks TooManyTickers state
+
+    else
+        Clock.monotonicNow runtime
+            |> Task.andThen
+                (\(MonotonicTime now) ->
+                    let
+                        id =
+                            state.next
+
+                        interval =
+                            Clock.timerMilliseconds duration
+
+                        active =
+                            { interval = interval, target = now + toFloat interval, previous = now, taggers = [] }
+
+                        next =
+                            { state | next = id + 1, active = Dict.insert id active state.active }
+                    in
+                    sendStartSuccess router callbacks (Ticker id) next
+                )
+
+
+sendStartSuccess router callbacks ticker state =
+    case callbacks of
+        [] ->
+            Task.succeed state
+
+        callback :: rest ->
+            Platform.sendToApp router (callback (Ok ticker))
+                |> Task.andThen (\_ -> sendStartSuccess router rest ticker state)
+
+
+sendStartErrors router callbacks problem state =
+    case callbacks of
+        [] ->
+            Task.succeed state
+
+        callback :: rest ->
+            Platform.sendToApp router (callback (Err problem))
+                |> Task.andThen (\_ -> sendStartErrors router rest problem state)
 
 
 withTaggers subscriptions state =

@@ -221,7 +221,202 @@ applyCommands router commands state =
             Task.succeed state
 
         command_ :: rest ->
-            applyCommand router command_ state |> Task.andThen (applyCommands router rest)
+            case command_ of
+                Acquire _ callback ->
+                    let
+                        ( matching, remaining ) =
+                            takeAcquire rest
+                    in
+                    applyAcquire router (callback :: matching) state
+                        |> Task.andThen (applyCommands router remaining)
+
+                SetRaw terminal mode callback ->
+                    let
+                        ( matching, remaining ) =
+                            takeSetRaw terminal mode rest
+                    in
+                    applyControl router (callback :: matching) (Elm.Kernel.SchelmRuntime.setRaw (terminalId terminal) (mode == Raw)) state
+                        |> Task.andThen (applyCommands router remaining)
+
+                Release terminal callback ->
+                    let
+                        ( matching, remaining ) =
+                            takeRelease terminal rest
+                    in
+                    applyRelease router terminal (callback :: matching) state
+                        |> Task.andThen (applyCommands router remaining)
+
+                Recover _ callback ->
+                    let
+                        ( matching, remaining ) =
+                            takeRecover rest
+                    in
+                    applyControl router (callback :: matching) Elm.Kernel.SchelmRuntime.recover state
+                        |> Task.andThen (applyCommands router remaining)
+
+                _ ->
+                    applyCommand router command_ state |> Task.andThen (applyCommands router rest)
+
+
+takeAcquire commands =
+    case commands of
+        (Acquire _ callback) :: rest ->
+            let
+                ( matching, remaining ) =
+                    takeAcquire rest
+            in
+            ( callback :: matching, remaining )
+
+        _ ->
+            ( [], commands )
+
+
+takeSetRaw terminal mode commands =
+    case commands of
+        (SetRaw candidate candidateMode callback) :: rest ->
+            if candidate == terminal && candidateMode == mode then
+                let
+                    ( matching, remaining ) =
+                        takeSetRaw terminal mode rest
+                in
+                ( callback :: matching, remaining )
+
+            else
+                ( [], commands )
+
+        _ ->
+            ( [], commands )
+
+
+takeRelease terminal commands =
+    case commands of
+        (Release candidate callback) :: rest ->
+            if candidate == terminal then
+                let
+                    ( matching, remaining ) =
+                        takeRelease terminal rest
+                in
+                ( callback :: matching, remaining )
+
+            else
+                ( [], commands )
+
+        _ ->
+            ( [], commands )
+
+
+takeRecover commands =
+    case commands of
+        (Recover _ callback) :: rest ->
+            let
+                ( matching, remaining ) =
+                    takeRecover rest
+            in
+            ( callback :: matching, remaining )
+
+        _ ->
+            ( [], commands )
+
+
+applyAcquire router callbacks state =
+    let
+        accepted =
+            List.take 64 callbacks
+
+        rejected =
+            List.drop 64 callbacks
+
+        finish result next =
+            sendAcquireCallbacks router accepted result next
+                |> Task.andThen (sendAcquireCallbacks router rejected (Err TooManyAcquireJoiners))
+    in
+    case state.terminal of
+        Just _ ->
+            finish (Err Busy) state
+
+        Nothing ->
+            Elm.Kernel.SchelmRuntime.acquireTerminal
+                |> Task.andThen
+                    (\raw ->
+                        case raw.kind of
+                            "ok" ->
+                                let
+                                    terminal =
+                                        Terminal raw.id { size = { columns = raw.columns, rows = raw.rows }, colorSupport = color raw.depth }
+                                in
+                                finish (Ok terminal) { state | terminal = Just terminal }
+
+                            "not" ->
+                                finish (Err NotInteractive) state
+
+                            "busy" ->
+                                finish (Err Busy) state
+
+                            "restore" ->
+                                finish (Err RestoreFailed) state
+
+                            _ ->
+                                finish (Err AcquireFailed) state
+                    )
+
+
+applyControl router callbacks operation state =
+    let
+        accepted =
+            List.take 64 callbacks
+
+        rejected =
+            List.drop 64 callbacks
+    in
+    operation
+        |> Task.andThen
+            (\outcome ->
+                sendControlCallbacks router accepted (control outcome) state
+                    |> Task.andThen (sendControlCallbacks router rejected (Err TooManyControlJoiners))
+            )
+
+
+applyRelease router terminal callbacks state =
+    cancelRead state
+        |> Task.andThen
+            (\cancelled ->
+                Elm.Kernel.SchelmRuntime.release (terminalId terminal)
+                    |> Task.andThen
+                        (\outcome ->
+                            let
+                                next =
+                                    if outcome == "ok" then
+                                        { cancelled | terminal = Nothing, reader = Nothing }
+
+                                    else
+                                        cancelled
+                            in
+                            sendControlCallbacks router (List.take 64 callbacks) (control outcome) next
+                                |> Task.andThen (sendControlCallbacks router (List.drop 64 callbacks) (Err TooManyControlJoiners))
+                        )
+            )
+
+
+sendAcquireCallbacks router callbacks result state =
+    case callbacks of
+        [] ->
+            Task.succeed state
+
+        callback :: rest ->
+            send router callback result state |> Task.andThen (sendAcquireCallbacks router rest result)
+
+
+sendControlCallbacks router callbacks result state =
+    case callbacks of
+        [] ->
+            Task.succeed state
+
+        callback :: rest ->
+            send router callback result state |> Task.andThen (sendControlCallbacks router rest result)
+
+
+terminalId (Terminal id _) =
+    id
 
 
 applyCommand router command_ state =

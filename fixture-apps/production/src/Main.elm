@@ -27,6 +27,13 @@ type Msg
     | ResizeEvent Terminal.ResizeEvent
     | TickEvent Ticker.Tick
     | EntropyDone (Result Entropy.Error String)
+    | ShareAcquired (Result Terminal.AcquireError Terminal.Terminal)
+    | ShareControlled (Result Terminal.ControlError ())
+    | ShareReleased (Result Terminal.ControlError ())
+    | ShareRecovered (Result Terminal.ControlError ())
+    | ShareTickerReady (Result Ticker.StartError Ticker.Ticker)
+    | ReplayReaderReady (Result Terminal.ReaderError Terminal.InputReader)
+    | ReplayReadDone (Result Terminal.InputError Terminal.InputPiece)
 
 
 type alias Model =
@@ -35,6 +42,7 @@ type alias Model =
     , reader : Maybe Terminal.InputReader
     , ticker : Maybe Ticker.Ticker
     , mode : String
+    , shareCount : Int
     }
 
 
@@ -48,7 +56,7 @@ main =
 
 
 empty =
-    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing, mode = "ordinary" }
+    { runtime = Nothing, terminal = Nothing, reader = Nothing, ticker = Nothing, mode = "ordinary", shareCount = 0 }
 
 
 subscriptions model =
@@ -109,7 +117,16 @@ update msg model =
             in
             ( { model | runtime = Just runtime }
             , Cmd.batch
-                (if String.startsWith "pty-" model.mode then
+                (if model.mode == "pty-share" then
+                    List.repeat 65 (Terminal.acquire runtime ShareAcquired)
+
+                 else if model.mode == "pty-input-replay" then
+                    [ Terminal.acquire runtime TerminalReady ]
+
+                 else if model.mode == "share-ticker" then
+                    List.repeat 65 (Ticker.start runtime duration ShareTickerReady)
+
+                 else if String.startsWith "pty-" model.mode then
                     [ Terminal.acquire runtime TerminalReady ]
 
                  else
@@ -128,7 +145,11 @@ update msg model =
 
         TerminalReady (Ok terminal) ->
             ( { model | terminal = Just terminal }
-            , Cmd.batch [ Terminal.setRawMode terminal Terminal.Raw Controlled, Terminal.openInput terminal ReaderReady ]
+            , if model.mode == "pty-input-replay" then
+                Terminal.openInput terminal ReplayReaderReady
+
+              else
+                Cmd.batch [ Terminal.setRawMode terminal Terminal.Raw Controlled, Terminal.openInput terminal ReaderReady ]
             )
 
         ReaderReady (Ok reader) ->
@@ -190,3 +211,127 @@ update msg model =
 
         EntropyDone _ ->
             ( model, Cmd.none )
+
+        ShareAcquired result ->
+            let
+                nextCount =
+                    model.shareCount + 1
+
+                nextTerminal =
+                    case result of
+                        Ok terminal ->
+                            Just terminal
+
+                        Err _ ->
+                            model.terminal
+
+                nextModel =
+                    { model | shareCount = nextCount, terminal = nextTerminal }
+            in
+            if nextCount == 65 then
+                case nextTerminal of
+                    Just terminal ->
+                        ( { nextModel | shareCount = 0 }, Cmd.batch [ report (shareAcquireResult result), Cmd.batch (List.repeat 65 (Terminal.setRawMode terminal Terminal.Raw ShareControlled)) ] )
+
+                    Nothing ->
+                        ( nextModel, report "share-acquire-no-terminal" )
+
+            else
+                ( nextModel, report (shareAcquireResult result) )
+
+        ShareControlled result ->
+            let
+                nextCount =
+                    model.shareCount + 1
+            in
+            if nextCount == 65 then
+                case model.terminal of
+                    Just terminal ->
+                        ( { model | shareCount = 0 }, Cmd.batch [ report (shareControlResult "control" result), Cmd.batch (List.repeat 65 (Terminal.release terminal ShareReleased)) ] )
+
+                    Nothing ->
+                        ( model, report "share-control-no-terminal" )
+
+            else
+                ( { model | shareCount = nextCount }, report (shareControlResult "control" result) )
+
+        ShareReleased result ->
+            let
+                nextCount =
+                    model.shareCount + 1
+            in
+            if nextCount == 65 then
+                case model.runtime of
+                    Just runtime ->
+                        ( { model | shareCount = 0 }, Cmd.batch [ report (shareControlResult "release" result), Cmd.batch (List.repeat 65 (Terminal.recover runtime ShareRecovered)) ] )
+
+                    Nothing ->
+                        ( model, report "share-release-no-runtime" )
+
+            else
+                ( { model | shareCount = nextCount }, report (shareControlResult "release" result) )
+
+        ShareRecovered result ->
+            ( model, report (shareControlResult "recover" result) )
+
+        ReplayReaderReady (Ok reader) ->
+            ( { model | reader = Just reader }, Terminal.read reader ReplayReadDone )
+
+        ReplayReaderReady (Err _) ->
+            ( model, report "input-reader-error" )
+
+        ReplayReadDone (Ok piece) ->
+            ( model, report ("input:" ++ Terminal.inputText piece ++ ":" ++ String.fromInt (Terminal.inputBytes piece) ++ ":" ++ malformedLabel (Terminal.inputHadMalformedUtf8 piece)) )
+
+        ReplayReadDone (Err _) ->
+            ( model, report "input-read-error" )
+
+        ShareTickerReady result ->
+            ( model
+            , report
+                (case result of
+                    Ok _ ->
+                        "ticker-ok"
+
+                    Err Ticker.TooManyStartJoiners ->
+                        "ticker-join-limit"
+
+                    Err _ ->
+                        "ticker-other-error"
+                )
+            )
+
+
+malformedLabel malformed =
+    if malformed then
+        "malformed"
+
+    else
+        "valid"
+
+
+shareAcquireResult result =
+    case result of
+        Ok _ ->
+            "acquire-ok"
+
+        Err Terminal.TooManyAcquireJoiners ->
+            "acquire-join-limit"
+
+        Err _ ->
+            "acquire-other-error"
+
+
+shareControlResult prefix result =
+    case result of
+        Ok _ ->
+            prefix ++ "-ok"
+
+        Err Terminal.TooManyControlJoiners ->
+            prefix ++ "-join-limit"
+
+        Err Terminal.Released ->
+            prefix ++ "-released"
+
+        Err _ ->
+            prefix ++ "-other-error"

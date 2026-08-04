@@ -13,11 +13,35 @@ if (mode === 'restore-failed') {
     return real(value);
   };
 }
-const app = require(`../../build/runtime-${artifact}.js`).Elm.Main.init({ flags: `pty-${mode}` });
+const flags = mode === 'share' ? 'pty-share' : mode === 'input-replay' ? 'pty-input-replay' : `pty-${mode}`;
+const app = require(`../../build/runtime-${artifact}.js`).Elm.Main.init({ flags });
+const shared = [];
 app.ports.report.subscribe(line => {
   if (line === 'RAW' || line === 'POISON' || line === 'RECOVERED') process.stdout.write(`${line}\n`);
   if (mode === 'release' && line === 'RAW') setTimeout(() => process.exit(0), 50);
   if (mode === 'backstop' && line === 'RAW') process.exit(0);
   if (mode === 'restore-failed' && line === 'RECOVERED') process.exit(0);
+  if (mode === 'input-replay' && line.startsWith('input:')) {
+    process.stdout.write(`${line}\n`);
+    process.exit(0);
+  }
+  if (mode === 'share') {
+    shared.push(line);
+    if (shared.length === 260) {
+      const counts = Object.fromEntries([...new Set(shared)].map(value => [value, shared.filter(x => x === value).length]));
+      process.stdout.write(`SHARE=${JSON.stringify(counts)}\n`);
+      const expected = {
+        'acquire-ok': 64,
+        'acquire-join-limit': 1,
+        'control-ok': 64,
+        'control-join-limit': 1,
+        'release-ok': 64,
+        'release-join-limit': 1,
+        'recover-released': 64,
+        'recover-join-limit': 1
+      };
+      process.exit(JSON.stringify(counts) === JSON.stringify(expected) ? 0 : 93);
+    }
+  }
 });
 setTimeout(() => process.exit(92), 3000);

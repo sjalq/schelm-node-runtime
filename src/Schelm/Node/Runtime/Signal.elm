@@ -90,7 +90,7 @@ sync router signal taggers state =
                 generation =
                     old.generation + 1
             in
-            Elm.Kernel.SchelmRuntime.attachSignal (signalInt signal) (Platform.sendToSelf router (Fired signal generation))
+            Elm.Kernel.SchelmRuntime.attachSignal (signalInt signal) (\_ -> Platform.sendToSelf router (Fired signal generation))
                 |> Process.spawn
                 |> Task.map (\pid -> set signal { generation = generation, taggers = accepted, listener = Just pid } state)
 
