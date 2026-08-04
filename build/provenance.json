@@ -1,7 +1,7 @@
 {
-  "schema": "schelm-node-runtime-provenance-v1",
-  "commit": "0a086833e2a7095dfa09a32ac83a6dc453dbce75",
-  "tree": "49619709025c4d6d2c584a95d4a85be8445b81a8",
+  "schema": "schelm-node-runtime-provenance-v2",
+  "commit": "8ea29b45983730d9ecf91c5a00486af10ad46e81",
+  "tree": "5e57af457cdfe839646fc8e54a881af93341e6c9",
   "dirty": false,
   "compilerAuthorizationCommit": "76bbe44424106c96f915cb24cd7f50d69f5cee0e",
   "compilerBinarySha256": "69987adf7062562b6e6dfd60b6709be3a06feeb90b096b9c84f673f2b97d8654",
@@ -9,12 +9,12 @@
   "nodeBinarySha256": "82e1a4da51b1870fc16495482f47c9bbb634dd02559f80ab5385090123cb034a",
   "platform": "linux-x64",
   "kernel": "6.8.0-124-generic",
-  "sourceDigest": "a2d30cea2301d3c7133c2cdd1d891545766d39bd92310a83f15cdac2d0c120de",
+  "sourceDigest": "468d0868c343a05f95505ec63a382fc3793982018406b5e1ca09516ab7a26b4d",
   "artifacts": {
-    "debug": "0e3416c97e7a4fdf3de7f6a4a7a68c2bfbed5afa46b8ac1c31a25424525122be",
-    "optimize": "52b669aead83346b010453d2e06c194d88d1a5f84b703a84f68f864ff11cb703",
-    "boundaryDebug": "4e487d53bb217f1a278b0b174087cf7bea293b43b416201ac1e9d66bad011ba4",
-    "boundaryOptimize": "cf77ef00403411e3d66f0a3da568d4d1c7d4e8478450d46e641b0810e826929a",
+    "debug": "64d97ab3b50a6d63305dd35afd7ec18c09988374c699a09e91be49db2f5f1e47",
+    "optimize": "cdc3e1d6dd0636efc01cf8141e9d93dc5bd7bdabaaaac907c1a5e4fbdb628401",
+    "boundaryDebug": "2c364d2674325947cddddb3efb9f8c6ad1b397f2a7f55128db7d7b35859b00bc",
+    "boundaryOptimize": "cb4861e0c1455173b7ea86d9a3b67a8f674719a6442941475e0f169067f167d8",
     "apiDebug": "b48573dd407ed483f84ea1a2891ec9271ca667c575d4ec0c52da6842f654d30d",
     "apiOptimize": "4b05af516e65a0c72883dcc0aadc9232b7afaeb970c826e0b15a68ca57def5cc"
   },
@@ -24,11 +24,41 @@
     "signal": "a08c2219d0dc62a29cbf56792f96ed545cdceab83943979ac06ae1cb65b0f585",
     "ticker": "47e78eb1fb49c1303063e87c101fd2b38c5e680d2150781d51eaffa470d64ad8"
   },
-  "seeds": [
-    104729,
-    130363,
-    155921,
-    196613
+  "traceCounts": {
+    "generatedPerSubsystem": 200,
+    "compiledModes": 2,
+    "compiledZeroByteWritesPerMode": 257,
+    "ptyCases": 6
+  },
+  "seeds": {
+    "console": 104729,
+    "signal": 130363,
+    "input": 155921,
+    "ticker": 196613
+  },
+  "pty": {
+    "runner": "python3+pty",
+    "platform": "linux-x64",
+    "kernel": "6.8.0-124-generic",
+    "compiledArtifacts": [
+      "debug",
+      "optimize"
+    ],
+    "operations": [
+      "release",
+      "exit-backstop",
+      "poison-recovery"
+    ]
+  },
+  "commands": [
+    "elm-format --validate src fixture-apps/production/src api-feasibility/package/src api-feasibility/app/src",
+    "node api-feasibility/scripts/build.cjs",
+    "node scripts/build-fixtures.cjs",
+    "node --test --test-timeout=60000 tests/node/*.test.cjs tests/pty/*.test.cjs",
+    "node tests/oracle/import-gate.cjs",
+    "node tests/mutation-gate.cjs",
+    "node tests/replay.cjs tests/replays/{console,signal,input,ticker}.json",
+    "node tests/audit.cjs"
   ],
   "nonClaim": "Hashes prove tested artifact identity; compiler and Node bit-reproducibility are not claimed."
 }
