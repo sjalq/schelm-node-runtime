@@ -1,5 +1,5 @@
-import os,pty,subprocess,sys,termios,select,time,fcntl,struct
-mode=sys.argv[1]; artifact=sys.argv[2]; master,slave=pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0)); before=termios.tcgetattr(slave); p=subprocess.Popen(['/opt/elm-harness/current/runtime/node','tests/pty/terminal-child.cjs',mode,artifact],stdin=slave,stdout=slave,stderr=slave,close_fds=True); out=b''; end=time.time()+5
+import os,pty,subprocess,sys,termios,select,time,fcntl,struct,shutil
+mode=sys.argv[1]; artifact=sys.argv[2]; master,slave=pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0)); before=termios.tcgetattr(slave); node=os.environ.get('SCHELM_NODE_BIN') or shutil.which('node'); p=subprocess.Popen([node,'tests/pty/terminal-child.cjs',mode,artifact],stdin=slave,stdout=slave,stderr=slave,close_fds=True); out=b''; end=time.time()+5
 if mode == 'input-replay':
  time.sleep(.5); os.write(master,b'\xff'); time.sleep(.1); os.write(master,b'\x04'); time.sleep(.1); os.write(master,b'\x04')
 if mode == 'input-aba':
